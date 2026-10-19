@@ -11,7 +11,6 @@ import { serveFile } from './files.mjs';
 
 const PACK_ID = /^[a-z][a-z0-9_]*$/;
 // Tool each command needs before it can do anything useful.
-// ponytail: mesh packs also need Blender on build; add when the first mesh pack ships.
 const COMMANDS = { build: 'godot', approve: null, package: 'godot', listing: null, publish: 'butler' };
 const ASSET_NAME = /^[\w.][\w.-]*$/;
 const CONFIG = 'import json; from pipeline.run import global_spec; print(json.dumps(global_spec()))';
@@ -129,6 +128,9 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       const settings = await config();
       const tool = playground ? 'godot' : COMMANDS[cmd];
       if (tool) await needTool(tool, settings.tools?.[tool]);
+      // Mesh packs are inspected in Blender during build (category from the DB; unknown before the first build).
+      if (cmd === 'build' && read(con => con.prepare('SELECT category FROM packs WHERE pack_id = ?').get(id))?.category === 'mesh')
+        await needTool('blender', settings.tools?.blender);
       if (cmd === 'publish') {
         const user = settings.itch?.user;
         if (!user) throw fail(424, 'itch.user is not set; put it in factory/spec/global.local.yaml', { tool: 'itch.user', path: '' });

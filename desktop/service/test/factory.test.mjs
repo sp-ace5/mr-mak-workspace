@@ -300,3 +300,19 @@ test('cancel stops a stuck job and its whole process tree', async () => {
     assert.equal((await job(f, 'build')).status, 200);                                     // lock released
   } finally { f.close(); }
 });
+
+test('building a mesh pack also needs Blender', async () => {
+  const f = await fixture();
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(path.join(f.factoryDir, 'factory.db'));
+    db.exec("UPDATE packs SET category = 'mesh' WHERE pack_id = 'ui_sfx_v1'");
+    db.close();
+    const result = await job(f, 'build');                                   // fixture config has no blender
+    assert.equal(result.status, 424);
+    assert.equal(result.body.tool, 'blender');
+    process.env.STUB_CONFIG = JSON.stringify({ ...JSON.parse(process.env.STUB_CONFIG), tools: { ...JSON.parse(process.env.STUB_CONFIG).tools, blender: path.join(f.root, 'godot.exe') } });
+    assert.equal((await job(f, 'build')).status, 200);
+    assert.equal((await job(f, 'listing')).status, 200);                    // only build runs Blender
+  } finally { f.close(); }
+});

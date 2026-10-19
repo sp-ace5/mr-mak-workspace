@@ -1,5 +1,5 @@
 extends CharacterBody3D
-## Capsule third-person controller: WASD or arrows to walk, click to capture the mouse and look, Esc to release.
+## Capsule third-person controller: WASD or arrows to walk, click to capture the mouse and look. Esc (the pause menu) releases it.
 
 const SPEED := 5.0
 const LOOK := 0.004
@@ -39,8 +39,6 @@ func _ready() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	elif event is InputEventKey and event.pressed and event.physical_keycode == KEY_ESCAPE:
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	elif event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		rotate_y(-event.relative.x * LOOK)
 		_arm.rotation.x = clampf(_arm.rotation.x - event.relative.y * LOOK, -1.2, 0.4)

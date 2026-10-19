@@ -1,12 +1,15 @@
 """The asset playground (playground/): sync, headless load check, and the `playground` command.
 Godot runs only headless here; nothing is launched on screen and nothing is pushed anywhere."""
+import base64
 import json
 import os
 import pathlib
 import shutil
 import sqlite3
+import struct
 import subprocess
 import sys
+import wave
 
 import pytest
 
@@ -35,13 +38,48 @@ def playground(tmp_path):
     return dst
 
 
+def tiny_wav(path):
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(struct.pack("<480h", *([1000, -1000] * 240)))
+
+
+def tiny_gltf(path):
+    """One triangle, its buffer embedded as a data URI."""
+    data = struct.pack("<9f", 0, 0, 0, 1, 0, 0, 0, 1, 0)
+    path.write_text(json.dumps({
+        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0, "name": "Crate"}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+        "buffers": [{"byteLength": len(data), "uri": "data:application/octet-stream;base64," + base64.b64encode(data).decode()}],
+        "bufferViews": [{"buffer": 0, "byteLength": len(data)}],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]}],
+    }), encoding="utf-8")
+
+
+def randomizer(path, wav_res):
+    path.write_text('[gd_resource type="AudioStreamRandomizer" load_steps=2 format=3]\n\n'
+                    f'[ext_resource type="AudioStream" path="{wav_res}" id="1"]\n\n'
+                    '[resource]\nstreams_count = 1\nstream_0/stream = ExtResource("1")\n', encoding="utf-8")
+
+
 def fx_addon(root):
-    """A packaged-looking addon with one spatial shader."""
+    """A packaged-looking addon with one of each content type the playground places."""
     addon = root / "fx_pack"
     (addon / "shaders").mkdir(parents=True)
     (addon / "shaders" / "glow.gdshader").write_text(
         "shader_type spatial;\nuniform vec4 c : source_color = vec4(1.0);\nvoid fragment() { ALBEDO = c.rgb; }\n",
         encoding="utf-8")
+    tiny_wav(addon / "Foot_Step01.wav")
+    tiny_wav(addon / "UI_Click01.wav")
+    randomizer(addon / "Foot_Steps.tres", "res://addons/fx_pack/Foot_Step01.wav")
+    randomizer(addon / "UI_Click.tres", "res://addons/fx_pack/UI_Click01.wav")
+    (addon / "fx_theme.tres").write_text('[gd_resource type="Theme" format=3]\n\n[resource]\ndefault_font_size = 18\n',
+                                         encoding="utf-8")
+    (addon / "sparks.tscn").write_text('[gd_scene format=3]\n\n[node name="Sparks" type="GPUParticles3D"]\namount = 16\n',
+                                       encoding="utf-8")
+    tiny_gltf(addon / "crate.gltf")
     (addon / "manifest.json").write_text(json.dumps([{"name": "glow", "kind": "shader"}]), encoding="utf-8")
     return addon
 
@@ -51,7 +89,7 @@ def test_playground_loads_synced_addons(playground, tmp_path):
     exe = real_godot()
     godot(exe, playground, "--import")
     empty = godot(exe, playground, "--script", "res://tools/check.gd")    # nothing synced, no addons/ yet
-    assert '{"shaders":0,"sounds":0}' in empty.stdout.replace(" ", "") and "ERROR" not in empty.stderr, empty.stderr
+    assert '"shaders":0,' in empty.stdout.replace(" ", "") and "ERROR" not in empty.stderr, empty.stderr
     addon = fx_addon(tmp_path / "dist")
     keep = playground / "addons" / "keep_me"
     keep.mkdir(parents=True)
@@ -62,7 +100,9 @@ def test_playground_loads_synced_addons(playground, tmp_path):
     assert (playground / "addons" / "fx_pack" / "shaders" / "glow.gdshader").exists()
     godot(exe, playground, "--import")
     check = godot(exe, playground, "--script", "res://tools/check.gd")
-    assert '{"shaders":1,"sounds":0}' in check.stdout.replace(" ", ""), check.stdout + check.stderr
+    counts = json.loads(next(l for l in check.stdout.splitlines() if l.startswith("{")))
+    assert counts == {"shaders": 1, "sounds": 2, "footsteps": True, "buttons": 1, "vfx": 1, "meshes": 1, "themes": 1}, \
+        check.stdout + check.stderr
     assert "ERROR" not in check.stderr, check.stderr
 
     clash = tmp_path / "dist" / "keep_me"                          # same name as the hand-installed addon
