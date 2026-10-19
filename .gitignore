@@ -53,3 +53,8 @@ factory/godot_harness/.godot/
 factory/godot_harness/addons/
 factory/godot_harness/pack/
 factory/godot_harness/**/*.uid
+
+# Asset playground: synced packs and Godot caches
+playground/addons/
+playground/.godot/
+playground/**/*.uid

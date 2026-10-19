@@ -1,0 +1,14 @@
+; Asset playground: walk around every approved, packaged factory pack.
+; Packs are copied into addons/ by tools/sync_packs.gd (run.py playground); addons/ is gitignored.
+
+config_version=5
+
+[application]
+
+config/name="Asset Playground"
+run/main_scene="res://Playground.tscn"
+config/features=PackedStringArray("4.5", "Forward Plus")
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
