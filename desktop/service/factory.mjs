@@ -2,14 +2,22 @@
 // writer: this module reads the DB read-only and runs the CLI for every change.
 import path from 'node:path';
 import { access } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
-import { json, publicError, realFile } from './util.mjs';
+import { body, json, publicError, realFile } from './util.mjs';
 import { serveFile } from './files.mjs';
 
 const PACK_ID = /^[a-z][a-z0-9_]*$/;
+// Tool each command needs before it can do anything useful.
+// ponytail: mesh packs also need Blender on build; add when the first mesh pack ships.
+const COMMANDS = { build: 'godot', approve: null, package: 'godot', listing: null, publish: 'butler' };
+const ASSET_NAME = /^[\w.][\w.-]*$/;
+const CONFIG = 'import json; from pipeline.run import global_spec; print(json.dumps(global_spec()))';
 const fail = (status, message, extra = {}) => Object.assign(new Error(message), { status, extra });
 
 export function createFactory({ factoryDir, repo, runner = [process.execPath, [path.join(repo, 'scripts', 'run-python.mjs')]], db = path.join(factoryDir, 'factory.db') }) {
+  const jobs = new Map();   // pack id -> { cmd, child }: one job per pack
   // Opened per request and closed at once, so the CLI never waits on a handle we hold.
   function read(query) {
     let con;
@@ -63,6 +71,81 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
     await serveFile(request, response, found.file, found.info);
   }
 
+  // Merged global.yaml + global.local.yaml, exactly as the CLI sees it.
+  function config() {
+    return new Promise((resolve, reject) => {
+      const child = spawn(runner[0], [...runner[1], '-c', CONFIG], { cwd: factoryDir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '', stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.on('error', error => reject(fail(424, `Python could not start: ${error.message}`, { tool: 'python', path: runner[0] })));
+      child.on('close', code => {
+        if (/Python 3 not found/.test(stderr)) return reject(fail(424, 'Python 3 not found', { tool: 'python', path: stderr.trim().split('Tried: ')[1] || '' }));
+        try { if (code === 0) return resolve(JSON.parse(stdout)); } catch { /* reported below */ }
+        reject(fail(500, `Factory config could not be read: ${stderr.trim().split('\n').slice(-3).join(' ') || `exit ${code}`}`));
+      });
+    });
+  }
+
+  async function needTool(name, configured) {
+    if (!configured || !await access(configured).then(() => true, () => false))
+      throw fail(424, `${name} not found at ${JSON.stringify(configured || '')}; set tools.${name} in factory/spec/global.local.yaml`, { tool: name, path: configured || '' });
+  }
+
+  async function startJob(request, response, id, cmd) {
+    if (!PACK_ID.test(id)) throw fail(400, 'Invalid pack id');
+    if (!(cmd in COMMANDS)) throw fail(404, 'Endpoint not found');
+    const spec = `spec/packs/${id}.yaml`;
+    if (!await access(path.join(factoryDir, spec)).then(() => true, () => false)) throw fail(404, 'Pack spec not found');
+    if (jobs.has(id)) throw fail(409, `A ${jobs.get(id).cmd} job is already running for ${id}`);
+    // Reserve before any await so two quick requests cannot both start.
+    const job = { cmd, child: null };
+    jobs.set(id, job);
+    try {
+      const data = await body(request, 64 * 1024);
+      const args = [path.join(factoryDir, 'pipeline', 'run.py'), cmd, '--pack', spec, '--json'];
+      if (cmd === 'approve') {
+        if (!Array.isArray(data.names) || !data.names.length || !data.names.every(name => typeof name === 'string' && ASSET_NAME.test(name)))
+          throw fail(400, 'approve needs {names: [asset names]}');
+        args.push('--only', ...data.names);
+      }
+      if (cmd === 'publish' && typeof data.confirm !== 'string') throw fail(400, 'publish needs {confirm: "<itch.user>/<pack>"}');
+      const settings = await config();
+      if (COMMANDS[cmd]) await needTool(COMMANDS[cmd], settings.tools?.[COMMANDS[cmd]]);
+      if (cmd === 'publish') {
+        const user = settings.itch?.user;
+        if (!user) throw fail(424, 'itch.user is not set; put it in factory/spec/global.local.yaml', { tool: 'itch.user', path: '' });
+        if (data.confirm !== `${user}/${id}`) throw fail(400, `Confirmation does not match the publish target ${user}/${id}`, { target: `${user}/${id}` });
+      }
+      job.child = spawn(runner[0], [...runner[1], ...args], { cwd: repo, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (error) { jobs.delete(id); throw error; }
+
+    response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+    // The job outlives a closed client: stopping approve or publish halfway is worse than finishing.
+    const send = event => { if (!response.writableEnded && !response.destroyed) response.write(`data: ${JSON.stringify(event)}\n\n`); };
+    let done = null;
+    const lines = (stream, wrap) => new Promise(resolve => createInterface({ input: stream }).on('line', wrap).on('close', resolve));
+    const outputs = Promise.all([
+      lines(job.child.stdout, line => {
+        let event;
+        try { event = JSON.parse(line); } catch { /* plain text */ }
+        if (!event || typeof event !== 'object' || Array.isArray(event) || typeof event.event !== 'string') event = { event: 'log', msg: line };
+        if (event.event === 'done') done = event;
+        send(event);
+      }),
+      lines(job.child.stderr, line => send({ event: 'stderr', msg: line })),
+    ]);
+    const code = await new Promise(resolve => {
+      job.child.on('error', error => { send({ event: 'error', message: error.message }); resolve(1); });
+      job.child.on('close', resolve);
+    });
+    await outputs;
+    // No done line (argparse error, Ctrl-C, crash) or an exit that contradicts it means failure.
+    if (!done || (done.exit === 0 && code !== 0)) send({ event: 'done', cmd, exit: code || 1, synthetic: true });
+    jobs.delete(id);
+    response.end();
+  }
+
   async function handle(request, response, url) {
     if (!url.pathname.startsWith('/factory/')) return false;
     try {
@@ -74,6 +157,8 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
         return json(response, 200, pack(detail[1])), true;
       }
       if (['GET', 'HEAD'].includes(method) && url.pathname === '/factory/file') return await file(request, response, url.searchParams.get('path')), true;
+      const action = /^\/factory\/packs\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+      if (method === 'POST' && action) return await startJob(request, response, action[1], action[2]), true;
       throw fail(404, 'Endpoint not found');
     } catch (error) {
       if (!response.headersSent) json(response, error.status || 400, { error: publicError(error), ...error.extra });
@@ -81,5 +166,5 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
     return true;
   }
 
-  return { handle, close() {} };
+  return { handle, close() { for (const job of jobs.values()) job.child?.kill(); } };
 }

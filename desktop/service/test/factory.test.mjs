@@ -55,6 +55,15 @@ async function fixture(stubEnv = {}) {
   return { root, factoryDir, url, calls, close: () => { factory.close(); server.close(); } };
 }
 
+async function post(url, body) {
+  const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+  const text = await response.text();
+  const events = response.headers.get('content-type')?.startsWith('text/event-stream')
+    ? text.split('\n\n').filter(frame => frame.startsWith('data: ')).map(frame => JSON.parse(frame.slice(6)))
+    : [];
+  return { status: response.status, type: response.headers.get('content-type'), events, body: events.length ? null : JSON.parse(text || 'null') };
+}
+
 test('packs list reads the fixture DB', async () => {
   const f = await fixture();
   try {
@@ -94,5 +103,105 @@ test('file route serves build and dist only', async () => {
       assert.equal((await file(rel)).status, 403, rel);
     await symlink(f.root, path.join(f.factoryDir, 'dist/ui_sfx_v1/out'), 'junction');
     assert.equal((await file('dist/ui_sfx_v1/out/secret.txt')).status, 403);
+  } finally { f.close(); }
+});
+
+const job = (f, cmd, body, id = 'ui_sfx_v1') => post(`${f.url}/factory/packs/${id}/${cmd}`, body);
+
+test('build streams events as SSE and ends with done', async () => {
+  const f = await fixture();
+  try {
+    const result = await job(f, 'build');
+    assert.equal(result.status, 200);
+    assert.match(result.type, /^text\/event-stream/);
+    assert.deepEqual(result.events.find(event => event.msg === 'not json'), { event: 'log', msg: 'not json' });
+    assert.deepEqual(result.events.find(event => event.event === 'stderr'), { event: 'stderr', msg: 'warn' });
+    assert.deepEqual(result.events.at(-1), { event: 'done', cmd: 'build', exit: 0 });
+    assert.deepEqual(await f.calls(), [['build', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json']]);
+  } finally { f.close(); }
+});
+
+test('missing done or argparse exit counts as failure', async () => {
+  const f = await fixture({ STUB_MODE: 'nodone' });
+  try {
+    assert.deepEqual((await job(f, 'listing')).events.at(-1), { event: 'done', cmd: 'listing', exit: 1, synthetic: true });
+    process.env.STUB_MODE = 'argparse';
+    const result = await job(f, 'listing');
+    assert.deepEqual(result.events.at(-1), { event: 'done', cmd: 'listing', exit: 2, synthetic: true });
+    assert.ok(result.events.some(event => event.event === 'stderr' && event.msg.startsWith('usage:')));
+    process.env.STUB_MODE = 'donefail';
+    assert.deepEqual((await job(f, 'listing')).events.at(-1), { event: 'done', cmd: 'listing', exit: 3, synthetic: true });
+  } finally { f.close(); }
+});
+
+test('second job on the same pack returns 409', async () => {
+  const f = await fixture({ STUB_MODE: 'slow' });
+  try {
+    const first = job(f, 'build');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal((await job(f, 'package')).status, 409);
+    assert.equal((await first).status, 200);
+    assert.equal((await job(f, 'build')).status, 200);
+  } finally { f.close(); }
+});
+
+test('approve passes names as --only', async () => {
+  const f = await fixture();
+  try {
+    assert.equal((await job(f, 'approve', { names: ['click', 'hover'] })).status, 200);
+    assert.deepEqual((await f.calls())[0], ['approve', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json', '--only', 'click', 'hover']);
+    assert.equal((await job(f, 'approve', { names: 'click' })).status, 400);
+    assert.equal((await job(f, 'approve', { names: ['-x'] })).status, 400);
+    assert.equal((await job(f, 'approve', { names: [] })).status, 400);
+    assert.equal((await f.calls()).length, 1);
+  } finally { f.close(); }
+});
+
+test('publish without matching confirm is rejected', async () => {
+  const f = await fixture();
+  try {
+    for (const body of [{}, { confirm: 'me/other' }, { confirm: 'evil/ui_sfx_v1' }, { confirm: ['me/ui_sfx_v1'] }])
+      assert.equal((await job(f, 'publish', body)).status, 400, JSON.stringify(body));
+    assert.deepEqual(await f.calls(), []);
+    assert.equal((await job(f, 'publish', { confirm: 'me/ui_sfx_v1' })).status, 200);
+    assert.equal((await f.calls())[0][0], 'publish');
+  } finally { f.close(); }
+});
+
+test('missing tool returns 424 with configured path', async () => {
+  const f = await fixture();
+  try {
+    const config = JSON.parse(process.env.STUB_CONFIG);
+    const withConfig = change => { process.env.STUB_CONFIG = JSON.stringify(change(structuredClone(config))); };
+    withConfig(c => { c.tools.butler = '/no/butler.exe'; return c; });
+    let result = await job(f, 'publish', { confirm: 'me/ui_sfx_v1' });
+    assert.equal(result.status, 424);
+    assert.equal(result.body.tool, 'butler');
+    assert.equal(result.body.path, '/no/butler.exe');
+    withConfig(c => { c.itch.user = ''; return c; });
+    result = await job(f, 'publish', { confirm: '/ui_sfx_v1' });
+    assert.equal(result.status, 424);
+    assert.equal(result.body.tool, 'itch.user');
+    withConfig(c => { c.tools.godot = '/no/godot.exe'; return c; });
+    result = await job(f, 'build');
+    assert.equal(result.status, 424);
+    assert.deepEqual([result.body.tool, result.body.path], ['godot', '/no/godot.exe']);
+    withConfig(c => c);
+    process.env.STUB_MODE = 'nopython';
+    result = await job(f, 'listing');
+    assert.equal(result.status, 424);
+    assert.equal(result.body.tool, 'python');
+    assert.deepEqual(await f.calls(), []);
+  } finally { f.close(); }
+});
+
+test('unknown pack or command', async () => {
+  const f = await fixture();
+  try {
+    assert.equal((await job(f, 'build', {}, 'nope')).status, 404);
+    assert.equal((await job(f, 'init')).status, 404);
+    assert.equal((await post(`${f.url}/factory/packs/..%2Fx/build`)).status, 400);
+    assert.equal((await job(f, 'build', {}, 'UI')).status, 400);
+    assert.deepEqual(await f.calls(), []);
   } finally { f.close(); }
 });
