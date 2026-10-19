@@ -111,7 +111,7 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
           throw fail(400, 'approve needs {names: [asset names]}');
         args.push('--only', ...data.names);
       }
-      if (data.dryRun !== undefined && typeof data.dryRun !== 'boolean') throw fail(400, 'dryRun must be true or false');
+      if (data.dryRun !== undefined && (cmd !== 'publish' || typeof data.dryRun !== 'boolean')) throw fail(400, 'dryRun is a publish option: true or false');
       // A dry run pushes nothing, so it is the one publish that needs no typed confirmation.
       const dryRun = cmd === 'publish' && data.dryRun === true;
       if (dryRun) args.push('--dry-run');
@@ -123,12 +123,12 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
         if (!user) throw fail(424, 'itch.user is not set; put it in factory/spec/global.local.yaml', { tool: 'itch.user', path: '' });
         if (!dryRun && data.confirm !== `${user}/${id}`) throw fail(400, `Confirmation does not match the publish target ${user}/${id}`, { target: `${user}/${id}` });
       }
-      // Every job's events also go to factory/build/<pack>/jobs/<stamp>-<cmd>.log (spec section 7).
+      // Every job's events also go to factory/build/<pack>/jobs/<UTC stamp>-<cmd>.log (spec section 7); dry runs are named apart from real uploads.
       const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
       const logDir = path.join(factoryDir, 'build', id, 'jobs');
-      job.log = await mkdir(logDir, { recursive: true }).then(() => createWriteStream(path.join(logDir, `${stamp}-${cmd}.log`), { flags: 'a' }), error => error);
+      job.log = await mkdir(logDir, { recursive: true }).then(() => createWriteStream(path.join(logDir, `${stamp}-${cmd}${dryRun ? '-dry-run' : ''}.log`), { flags: 'a' }), error => error);
       job.child = spawn(runner[0], [...runner[1], ...args], { cwd: repo, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (error) { jobs.delete(id); throw error; }
+    } catch (error) { jobs.delete(id); job.log?.end?.(); throw error; }
 
     try {
       response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });

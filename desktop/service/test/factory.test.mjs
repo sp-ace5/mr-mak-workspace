@@ -195,6 +195,7 @@ test('publish dry run needs no confirm', async () => {
   const f = await fixture();
   try {
     assert.equal((await job(f, 'publish', { dryRun: 'yes' })).status, 400);
+    assert.equal((await job(f, 'build', { dryRun: true })).status, 400);
     assert.deepEqual(await f.calls(), []);
     assert.equal((await job(f, 'publish', { dryRun: true })).status, 200);
     assert.deepEqual((await f.calls()).at(-1), ['publish', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json', '--dry-run']);
@@ -214,5 +215,13 @@ test('every job writes a log file', async () => {
     const lines = (await readFile(path.join(dir, files[0]), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(lines.at(-1), { event: 'done', cmd: 'build', exit: 0 });
     assert.ok(lines.some(line => line.event === 'stderr' && line.msg === 'warn'));
+  } finally { f.close(); }
+});
+
+test('dry run logs are named apart from real publishes', async () => {
+  const f = await fixture();
+  try {
+    await job(f, 'publish', { dryRun: true });
+    assert.match((await readdir(path.join(f.factoryDir, 'build/ui_sfx_v1/jobs')))[0], /-publish-dry-run\.log$/);
   } finally { f.close(); }
 });

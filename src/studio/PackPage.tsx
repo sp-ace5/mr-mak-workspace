@@ -20,7 +20,15 @@ function Toolbar({ id, pack, repo, job, selected, version }: { id: string; pack:
   const [note, setNote] = useState('')
   const [publishing, setPublishing] = useState<Promise<DryRun> | null>(null)
   const demo = usePreview(factoryPath(repo, `dist/${id}/web_demo/index.html`), version)
-  const busy = !!job?.running
+  // A dry run holds the pack's server lock too, even after its dialog is cancelled.
+  const [previewing, setPreviewing] = useState(false)
+  const busy = !!job?.running || previewing
+  const openPublish = () => {
+    const preview = dryRun(id)
+    setPreviewing(true)
+    void preview.finally(() => setPreviewing(false))
+    setPublishing(preview)
+  }
   const passed = pack.assets.filter(asset => asset.status === 'passed').map(asset => asset.name)
   const picked = [...selected].filter(name => passed.includes(name))
   const run = (cmd: JobCommand, body: object = {}) => { setNote(''); return startJob(id, cmd, body) }
@@ -39,7 +47,7 @@ function Toolbar({ id, pack, repo, job, selected, version }: { id: string; pack:
     <button type="button" disabled={busy} onClick={() => void run('package')}>Package</button>
     <button type="button" disabled={busy} onClick={() => void copyListing()}>Copy listing</button>
     <button type="button" disabled={!demo?.url} onClick={() => demo && setPreview(demo)}>Open web demo</button>
-    <button type="button" disabled={busy || !!publishing} onClick={() => setPublishing(dryRun(id))}>Publish…</button>
+    <button type="button" disabled={busy || !!publishing} onClick={openPublish}>Publish…</button>
     {publishing && <PublishDialog id={id} preview={publishing} onClose={() => setPublishing(null)} />}
     <span className="studio-muted" role="status">{note}</span>
   </div>
@@ -68,7 +76,7 @@ function JobLog({ job }: { job: Job | null }) {
   if (job.error) return <JobError error={job.error} />
   const events = job.result && !job.events.includes(job.result) ? [...job.events, job.result] : job.events
   // Butler without a stored login fails the push; it needs a terminal once (spec section 7).
-  const login = job.cmd === 'publish' && events.some(event => event.event === 'error' && LOGIN.test(`${event.message ?? ''} ${event.msg ?? ''}`))
+  const login = job.cmd === 'publish' && events.some(event => event.event === 'error' && LOGIN.test(String(event.message ?? '')))
   return <>
     {login && <div className="studio-setup" role="alert"><b>Setup needed: butler login</b><p>Run <code>butler login</code> in a terminal once, then publish again.</p></div>}
     <div className="studio-log" role="log" aria-label={`${job.cmd} log`} ref={ref}>
@@ -78,7 +86,8 @@ function JobLog({ job }: { job: Job | null }) {
   </>
 }
 
-const LOGIN = /login|credentials|api key/i
+// Tested against butler's own output only: msg carries the target, which may contain "login".
+const LOGIN = /\bbutler login\b|not logged in|credentials/i
 
 function Releases({ releases }: { releases: Release[] }) {
   if (!releases.length) return null
