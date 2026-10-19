@@ -8,7 +8,7 @@ export interface Gate { gate: string; passed: 0 | 1; measured: string | null; ex
 export interface Asset { asset_id: string; name: string; kind: string; status: string; attempts: number; output_path: string | null; gates: Gate[] }
 export interface PackDetail extends PackSummary { spec_hash: string; assets: Asset[]; provenance: object[]; releases: Release[] }
 export interface JobEvent { event: string; msg?: string; message?: string; exit?: number; synthetic?: boolean; [key: string]: unknown }
-export type JobCommand = 'build' | 'approve' | 'package' | 'listing' | 'publish'
+export type JobCommand = 'build' | 'approve' | 'package' | 'listing' | 'publish' | 'playground'
 
 export class FactoryError extends Error {
   status: number
@@ -33,7 +33,9 @@ export async function factory<T>(path: string): Promise<T> {
 // Streams the job's SSE frames to onEvent; resolves with the final `done`
 // (the service always sends one, synthesising it when the CLI did not).
 export async function runJob(pack: string, cmd: JobCommand, body: object, onEvent: (event: JobEvent) => void): Promise<JobEvent> {
-  const response = await fetch(`/factory/packs/${encodeURIComponent(pack)}/${cmd}`, {
+  // The playground job spans every pack: its own route, no pack in the URL.
+  const url = cmd === 'playground' ? '/factory/playground' : `/factory/packs/${encodeURIComponent(pack)}/${cmd}`
+  const response = await fetch(url, {
     method: 'POST', headers: { ...authHeader(), 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   })
   if (!response.ok || !response.body) await fail(response)

@@ -93,19 +93,29 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       throw fail(424, `${name} not found at ${JSON.stringify(configured || '')}; set tools.${name} in factory/spec/global.local.yaml`, { tool: name, path: configured || '' });
   }
 
+  // id null = the playground job, which spans every pack and has its own lock.
   async function startJob(request, response, id, cmd) {
-    if (!PACK_ID.test(id)) throw fail(400, 'Invalid pack id');
-    if (!(cmd in COMMANDS)) throw fail(404, 'Endpoint not found');
+    const playground = id === null && cmd === 'playground';
     const spec = `spec/packs/${id}.yaml`;
-    if (!await access(path.join(factoryDir, spec)).then(() => true, () => false)) throw fail(404, 'Pack spec not found');
+    if (!playground) {
+      if (!PACK_ID.test(id)) throw fail(400, 'Invalid pack id');
+      if (!(cmd in COMMANDS)) throw fail(404, 'Endpoint not found');
+      if (!await access(path.join(factoryDir, spec)).then(() => true, () => false)) throw fail(404, 'Pack spec not found');
+    }
+    const key = playground ? '@playground' : id;
     // Body first: a client that never finishes sending it must not hold the pack's lock.
     const data = await body(request, 64 * 1024);
-    if (jobs.has(id)) throw fail(409, `A ${jobs.get(id).cmd} job is already running for ${id}`);
+    if (jobs.has(key)) throw fail(409, playground ? 'The playground is already being prepared' : `A ${jobs.get(key).cmd} job is already running for ${id}`);
+    // The playground copies dist/ folders that package rewrites: the two never overlap.
+    if (playground && jobs.size) throw fail(409, 'Wait for the running pack jobs to finish, then open the playground');
+    if (!playground && jobs.has('@playground')) throw fail(409, 'The playground is being prepared; try again when it is open');
     // Reserve before the next await so two quick requests cannot both start.
     const job = { cmd, child: null };
-    jobs.set(id, job);
+    jobs.set(key, job);
     try {
-      const args = [path.join(factoryDir, 'pipeline', 'run.py'), cmd, '--pack', spec, '--json'];
+      const args = [path.join(factoryDir, 'pipeline', 'run.py'), cmd, ...(playground ? [] : ['--pack', spec]), '--json'];
+      if (data.open !== undefined && (!playground || typeof data.open !== 'boolean')) throw fail(400, 'open is a playground option: true or false');
+      if (data.open === true) args.push('--open');
       if (cmd === 'approve') {
         if (!Array.isArray(data.names) || !data.names.length || !data.names.every(name => typeof name === 'string' && ASSET_NAME.test(name)))
           throw fail(400, 'approve needs {names: [asset names]}');
@@ -117,7 +127,8 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       if (dryRun) args.push('--dry-run');
       if (cmd === 'publish' && !dryRun && typeof data.confirm !== 'string') throw fail(400, 'publish needs {confirm: "<itch.user>/<pack>"}');
       const settings = await config();
-      if (COMMANDS[cmd]) await needTool(COMMANDS[cmd], settings.tools?.[COMMANDS[cmd]]);
+      const tool = playground ? 'godot' : COMMANDS[cmd];
+      if (tool) await needTool(tool, settings.tools?.[tool]);
       if (cmd === 'publish') {
         const user = settings.itch?.user;
         if (!user) throw fail(424, 'itch.user is not set; put it in factory/spec/global.local.yaml', { tool: 'itch.user', path: '' });
@@ -125,10 +136,10 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       }
       // Every job's events also go to factory/build/<pack>/jobs/<UTC stamp>-<cmd>.log (spec section 7); dry runs are named apart from real uploads.
       const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
-      const logDir = path.join(factoryDir, 'build', id, 'jobs');
+      const logDir = path.join(factoryDir, 'build', playground ? '_playground' : id, 'jobs');
       job.log = await mkdir(logDir, { recursive: true }).then(() => createWriteStream(path.join(logDir, `${stamp}-${cmd}${dryRun ? '-dry-run' : ''}.log`), { flags: 'a' }), error => error);
       job.child = spawn(runner[0], [...runner[1], ...args], { cwd: repo, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (error) { jobs.delete(id); job.log?.end?.(); throw error; }
+    } catch (error) { jobs.delete(key); job.log?.end?.(); throw error; }
 
     try {
       response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
@@ -161,7 +172,7 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       if (typeof done?.exit !== 'number' || done.exit !== code) send({ event: 'done', cmd, exit: code || 1, synthetic: true });
       await new Promise(resolve => job.log ? job.log.end(resolve) : resolve());   // log complete before the client sees the end
       response.end();
-    } finally { jobs.delete(id); job.log?.end(); }
+    } finally { jobs.delete(key); job.log?.end(); }
   }
 
   async function handle(request, response, url) {
@@ -177,6 +188,7 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       if (['GET', 'HEAD'].includes(method) && url.pathname === '/factory/file') return await file(request, response, url.searchParams.get('path')), true;
       const action = /^\/factory\/packs\/([^/]+)\/([^/]+)$/.exec(url.pathname);
       if (method === 'POST' && action) return await startJob(request, response, action[1], action[2]), true;
+      if (method === 'POST' && url.pathname === '/factory/playground') return await startJob(request, response, null, 'playground'), true;
       throw fail(404, 'Endpoint not found');
     } catch (error) {
       if (!response.headersSent) json(response, error.status || 400, { error: publicError(error), ...error.extra });

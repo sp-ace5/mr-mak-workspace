@@ -12,6 +12,14 @@ appendFileSync(process.env.STUB_LOG, JSON.stringify([cmd, ...rest]) + '\n');
 if (mode === 'argparse') { process.stderr.write('usage: run.py [-h] {new,...}\n'); process.exit(2); }
 if (mode === 'nodone') { out({ event: 'log', msg: 'hi' }); process.exit(0); }
 if (mode === 'donefail') { out({ event: 'done', cmd, exit: 0 }); process.exit(3); }
+if (cmd === 'playground') {
+  if (mode === 'slowplay') await new Promise(resolve => setTimeout(resolve, 800));
+  out({ event: 'playground', msg: 'playground: 1 approved, packaged pack(s)', packs: ['ui_sfx_v1'] });
+  out({ event: 'check', msg: 'playground loads: 0 shaders, 4 sounds', shaders: 0, sounds: 4 });
+  if (rest.includes('--open')) out({ event: 'opened', msg: 'opened playground', path: 'playground' });
+  out({ event: 'done', cmd, exit: 0 });
+  process.exit(0);
+}
 if (cmd === 'publish') {
   const pack = rest[rest.indexOf('--pack') + 1].replace(/^spec\/packs\/|\.yaml$/g, '');
   const user = JSON.parse(process.env.STUB_CONFIG).itch.user;
