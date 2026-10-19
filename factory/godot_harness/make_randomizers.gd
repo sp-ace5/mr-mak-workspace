@@ -11,7 +11,8 @@ func _init() -> void:
 			continue
 		var stem := f.get_basename()
 		var parts := stem.split("_")
-		var key := "%s_%s" % [parts[0], parts[1].left(parts[1].length() - 2)]
+		# Names without "_" (not the UCS pattern) group on the stem minus its 2-digit variation.
+		var key := stem.left(stem.length() - 2) if parts.size() < 2 else "%s_%s" % [parts[0], parts[1].left(parts[1].length() - 2)]
 		groups.get_or_add(key, []).append(dir.path_join(f))
 	for key in groups:
 		var r := AudioStreamRandomizer.new()

@@ -156,3 +156,61 @@ def test_emit_survives_a_closed_pipe(fac):
                   "sys.stdout = real\n"
                   "print('survived')")
     assert "survived" in out
+
+
+def test_pack_id_must_match_the_file_name(fac):
+    """Two files claiming one pack_id would overwrite each other's approvals and publish to the wrong target."""
+    src = (fac / "spec" / "packs" / "ui_sfx_v1.yaml").read_text(encoding="utf-8")
+    (fac / "spec" / "packs" / "ui_sfx_v2.yaml").write_text(src, encoding="utf-8")    # still says pack_id: ui_sfx_v1
+    r = cli(fac, "build", "--pack", "spec/packs/ui_sfx_v2.yaml", "--json")
+    assert r.returncode == 1
+    assert any(e["event"] == "refused" and "pack_id" in e["reason"] for e in events(r)), r.stdout
+    assert not (fac / "t.db").exists() or "ui_sfx_v1" not in py(fac, "import sqlite3, os; print([r[0] for r in "
+        "sqlite3.connect(os.environ['FACTORY_DB']).execute('SELECT pack_id FROM packs')])")
+
+
+def test_approve_refuses_on_a_stale_recipe(fac):
+    """Passed under the old budgets is not passed: approving before a rebuild would freeze unchecked assets."""
+    pack = built_sfx(fac)
+    spec = fac / "spec" / "packs" / "t_sfx.yaml"
+    spec.write_text(spec.read_text(encoding="utf-8") + "\n# budgets changed\n", encoding="utf-8")
+    r = cli(fac, "approve", *pack, "--json")
+    assert r.returncode == 1
+    assert any(e["event"] == "refused" and "rebuild" in e["reason"] for e in events(r)), r.stdout
+
+
+def test_license_edits_make_the_build_stale_and_sync_on_build(fac):
+    """global.yaml's license table decides blockers; editing it must not leave old verdicts in place."""
+    code = ("from pipeline.run import recipe_hash, ROOT; "
+            "print(recipe_hash(ROOT / 'spec' / 'packs' / 'ui_sfx_v1.yaml'))")
+    before = py(fac, code)
+    g = fac / "spec" / "global.yaml"
+    g.write_text(g.read_text(encoding="utf-8").replace("{license_id: own-work,             commercial_ok: 1",
+                                                       "{license_id: own-work,             commercial_ok: 0"), encoding="utf-8")
+    assert py(fac, code) != before
+
+
+def test_recipe_hash_covers_shared_pipeline_code_and_harness_scenes(fac):
+    code = ("from pipeline.run import recipe_hash, ROOT; "
+            "print(recipe_hash(ROOT / 'spec' / 'packs' / 'ui_sfx_v1.yaml'))")
+    before = py(fac, code)
+    for path in (fac / "pipeline" / "audio_io.py", fac / "godot_harness" / "preview.tscn"):
+        path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        after = py(fac, code)
+        assert after != before, path.name
+        before = after
+
+
+def test_a_gate_crash_fails_that_asset_only(fac):
+    """One broken asset must not abort the build: it fails with a gate_error and its attempt counts."""
+    assert cli(fac, "new", "--kind", "ui_sfx", "--id", "t_sfx").returncode == 0
+    pack = ("--pack", "spec/packs/t_sfx.yaml")
+    gates = fac / "pipeline" / "gates" / "audio.py"
+    gates.write_text(gates.read_text(encoding="utf-8") + "\n\ndef _boom(*a, **k):\n    raise RuntimeError('gate exploded')\n"
+                     "check = _boom\n", encoding="utf-8")
+    r = cli(fac, "build", *pack, "--json")
+    ev = events(r)
+    gate_events = [e for e in ev if e["event"] == "gate"]
+    assert gate_events and all(not e["ok"] for e in gate_events), r.stdout + r.stderr
+    assert all(e["failed"][0]["gate"] == "gate_error" and "gate exploded" in e["failed"][0]["measured"] for e in gate_events)
+    assert ev[-1] == {"event": "done", "cmd": "build", "exit": 0}

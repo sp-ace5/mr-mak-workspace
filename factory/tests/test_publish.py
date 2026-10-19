@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import pathlib
 import shutil
 import sqlite3
 import sys
@@ -275,3 +276,22 @@ def test_publish_refuses_when_files_changed_since_the_preview(fac, butler):
     r = publish(fac, pack, "--expect", *seen)
     assert r.returncode == 0, r.stdout + r.stderr
     assert calls_made(calls) == [["push", str(z), "tester/t_sfx:godot-addon"]]
+
+
+def test_dry_run_on_a_fresh_checkout_refuses_cleanly(fac, butler):
+    """No factory.db yet: a refusal, not a crash, and no database file created by a preview."""
+    assert cli(fac, "new", "--kind", "ui_sfx", "--id", "t_sfx").returncode == 0
+    r = publish(fac, ("--pack", "spec/packs/t_sfx.yaml"), "--dry-run")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert any(e["event"] == "refused" and "never built" in e["reason"] for e in events(r)), r.stdout
+    assert not (fac / "t.db").exists()
+
+
+def test_bare_butler_name_is_found_on_path(fac, butler):
+    exe, calls = butler
+    pack = built_sfx(fac)
+    fake_zip(fac)
+    (fac / "spec" / "global.local.yaml").write_text(f"tools: {{butler: {exe.stem}}}\nitch: {{user: tester}}\n", encoding="utf-8")
+    r = publish(fac, pack, "--dry-run", env={"PATH": f"{exe.parent}{os.pathsep}{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert pathlib.Path([e["cmd"][0] for e in events(r) if e["event"] == "push"][0]).samefile(exe)
