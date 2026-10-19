@@ -1,19 +1,11 @@
 import { useEffect, useState } from 'react'
 import { factory, type PackSummary } from './api'
 import { usePoll } from './poll'
+import PackPage, { Chips } from './PackPage'
 import './studio.css'
-
-const STATUSES = ['pending', 'failed', 'passed', 'approved', 'rejected']
 
 // #/@studio → pack list, #/@studio/<pack_id> → pack page.
 const packFromHash = () => decodeURIComponent(location.hash.replace(/^#\/?@studio\/?/, '').split('/')[0] || '') || null
-
-export function Chips({ counts, shipped }: { counts: Record<string, number>; shipped?: boolean }) {
-  return <span className="studio-chips">
-    {STATUSES.filter(status => counts[status]).map(status => <span key={status} className={`studio-chip ${status}`}>{status} {counts[status]}</span>)}
-    {shipped && <span className="studio-chip shipped">shipped</span>}
-  </span>
-}
 
 function PackList() {
   const { data, error } = usePoll(() => factory<{ packs: PackSummary[] }>('/packs'), 'packs')
@@ -40,6 +32,6 @@ export default function Studio() {
   }, [])
   return <section className="studio">
     <h1>Asset Studio</h1>
-    {pack ? <p className="studio-muted">{pack}</p> : <PackList />}
+    {pack ? <><a href="#/@studio">← All packs</a><h2>{pack}</h2><PackPage key={pack} id={pack} /></> : <PackList />}
   </section>
 }

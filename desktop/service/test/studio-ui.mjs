@@ -29,8 +29,22 @@ try {
   await row.waitFor();
   for (const text of ['approved 1', 'failed 1', 'shipped']) assert.ok((await row.textContent()).includes(text), text);
 
+  // Pack page: gate table, audio from the content server, rendered VERIFY.md.
+  await row.getByRole('link', { name: 'ui_sfx_v1' }).click();
+  await page.getByRole('heading', { name: 'ui_sfx_v1', exact: true }).waitFor();
+  assert.ok(page.url().endsWith('#/@studio/ui_sfx_v1'));
+  const assets = page.getByRole('table', { name: 'Assets' });
+  const click = assets.getByRole('row').filter({ hasText: 'click' });
+  const hover = assets.getByRole('row').filter({ hasText: 'hover' });
+  assert.ok((await click.textContent()).includes('approved'));
+  for (const text of ['failed', 'peak', '0', '<=-1', 'not built']) assert.ok((await hover.textContent()).includes(text), text);
+  await page.locator('audio').waitFor({ state: 'attached' });
+  assert.equal(await page.locator('audio').count(), 1);
+  assert.match(await page.locator('audio').getAttribute('src'), /\/view\//);
+  await page.getByRole('heading', { name: 'VERIFY ui_sfx_v1' }).waitFor();
+
   assert.deepEqual(errors, []);
-  console.log('Studio UI passed: pack list.');
+  console.log('Studio UI passed: pack list, pack page.');
 } finally {
   await browser?.close();
   await service.close();

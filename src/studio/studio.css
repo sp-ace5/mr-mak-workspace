@@ -14,3 +14,12 @@
 .studio-chip.shipped { background: var(--purple-dim); color: var(--purple); }
 .studio-chip.pending { background: var(--amber-dim); color: var(--amber); }
 .sidebar-item.studio-link { margin-bottom: 8px; }
+.studio-assets { width: 100%; border-collapse: collapse; margin: 14px 0; }
+.studio-assets th, .studio-assets td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--hairline); vertical-align: top; }
+.studio-assets th { color: var(--text-dim); font-weight: 500; font-size: 13px; }
+.studio-assets audio { height: 32px; max-width: 260px; }
+.studio-gate { font-size: 13px; }
+.studio-frames { display: inline-flex; gap: 6px; }
+.studio-frames button { padding: 0; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: none; cursor: zoom-in; }
+.studio-frames img { display: block; width: 72px; height: 72px; object-fit: cover; border-radius: var(--radius-sm); }
+.studio-verify { margin-top: 18px; padding-top: 8px; border-top: 1px solid var(--hairline); }
