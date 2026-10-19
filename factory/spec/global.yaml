@@ -1,0 +1,39 @@
+# Machine-wide settings + the license allowlist. Re-read a license page before you change its row,
+# and bump checked_on. commercial_ok means "may end up inside a pack you SELL", not "legal to use".
+tools:
+  godot: 'C:\Tools\Godot\Godot_v4.5-stable_win64_console.exe'   # the _console exe, so stdout/stderr reach Python
+  blender: 'C:\Program Files\Blender Foundation\Blender\blender.exe'
+  resvg: 'C:\Tools\resvg\resvg.exe'
+  butler: 'C:\Tools\butler\butler.exe'
+
+paths:
+  wiki_raw: 'wiki/raw/packs'      # report copies each VERIFY.md here for the LLM-maintained wiki to digest
+
+licenses:
+  - {license_id: unknown,              commercial_ok: 0, checked_on: '2026-10-18', conditions: 'no sidecar, or a license nobody reviewed'}
+  - {license_id: own-work,             commercial_ok: 1, checked_on: '2026-10-18', conditions: 'you made it: synth code, recordings, hand edits'}
+  - {license_id: cc0,                  commercial_ok: 1, checked_on: '2026-10-18'}
+  - {license_id: mit,                  commercial_ok: 1, checked_on: '2026-10-18', conditions: 'only if nothing else in the chain is stricter'}
+  - {license_id: trellis2-local,       commercial_ok: 0, checked_on: '2026-10-18',
+     conditions: 'TRELLIS.2 is MIT, but depends on nvdiffrast (NVIDIA: research/evaluation only, no monetary gain); unresolved for assets you sell',
+     source_url: 'https://github.com/microsoft/TRELLIS/issues/298'}
+  - {license_id: apache-2.0,           commercial_ok: 1, checked_on: '2026-10-18', conditions: 'FLUX.1 schnell, MOSS-SoundEffect'}
+  - {license_id: stability-community,  commercial_ok: 1, checked_on: '2026-10-18',
+     conditions: 'free while annual revenue < $1M; register for commercial use',
+     source_url: 'https://stability.ai/license'}
+  - {license_id: meshy-paid,           commercial_ok: 1, checked_on: '2026-10-18',
+     conditions: 'Pro or higher active on the day you generated; private + customer-owned',
+     source_url: 'https://www.meshy.ai/pricing'}
+  - {license_id: meshy-free-ccby,      commercial_ok: 1, needs_attribution: 1, checked_on: '2026-10-18',
+     conditions: 'CC BY 4.0: credit Meshy in the listing and the pack LICENSE'}
+  - {license_id: tripo-paid,           commercial_ok: 1, checked_on: '2026-10-18',
+     conditions: 'paid plan active on the day you generated; Tripo keeps a display license; outputs not exclusive',
+     source_url: 'https://www.tripo3d.ai/terms'}
+  - {license_id: tripo-free,           commercial_ok: 0, checked_on: '2026-10-18',
+     conditions: 'Tripo retains all rights to free-user outputs'}
+  - {license_id: hunyuan3d-community,  commercial_ok: 0, checked_on: '2026-10-18',
+     conditions: 'license excludes EU/UK/South Korea; a global storefront cannot honour that'}
+  - {license_id: cc-by-nc,             commercial_ok: 0, checked_on: '2026-10-18', conditions: 'e.g. MMAudio weights'}
+  - {license_id: sonniss-gdc,          commercial_ok: 0, checked_on: '2026-10-18',
+     conditions: 'fine inside your own game; never inside a sound pack you sell'}
+  - {license_id: houdini-apprentice,   commercial_ok: 0, checked_on: '2026-10-18', conditions: 'non-commercial license'}
