@@ -633,10 +633,24 @@ def cmd_playground(con, open_after=False):
     headless with zero errors, and with --open then launches Godot on it, detached."""
     con.executescript((ROOT / "pipeline" / "schema.sql").read_text(encoding="utf-8"))   # a fresh DB is fine
     godot = global_spec()["tools"]["godot"]
-    ready = [r["pack_id"] for r in con.execute(
-        "SELECT pack_id FROM assets GROUP BY pack_id "
-        "HAVING SUM(status = 'approved') > 0 AND SUM(status NOT IN ('approved', 'rejected')) = 0 ORDER BY pack_id")]
-    dirs = [ROOT / "dist" / p / "addons" / p for p in ready if (ROOT / "dist" / p / "addons" / p / "manifest.json").exists()]
+    approved = {}
+    for r in con.execute("SELECT pack_id, name, status FROM assets ORDER BY pack_id"):
+        names = approved.setdefault(r["pack_id"], set())
+        if names is None or r["status"] == "rejected":
+            continue
+        if r["status"] == "approved":
+            names.add(r["name"])
+        else:
+            approved[r["pack_id"]] = None                 # something still pending, failed or only passed
+    def packaged(pid):
+        """The staged addon holds exactly today's approved assets (it may predate a later rejection)."""
+        try:
+            manifest = json.loads((ROOT / "dist" / pid / "addons" / pid / "manifest.json").read_text(encoding="utf-8"))
+            return {m["name"] for m in manifest} == approved[pid]
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+    ready = sorted(p for p, names in approved.items() if names and packaged(p))
+    dirs = [ROOT / "dist" / p / "addons" / p for p in ready]
     emit(f"playground: {len(dirs)} approved, packaged pack(s)", "playground", packs=[d.name for d in dirs])
     def headless(*args):
         return subprocess.run([godot, "--headless", "--path", str(PLAYGROUND), *args],
@@ -647,14 +661,16 @@ def cmd_playground(con, open_after=False):
             word, pid = line.split(" ", 1)
             emit(line, word, pack=pid)
     if sync.returncode != 0 or "err=0" not in sync.stdout:
-        emit("playground sync failed", "error", message="\n".join((sync.stdout + sync.stderr).splitlines()[-40:]))
+        detail = "\n".join((sync.stdout + sync.stderr).splitlines()[-40:])
+        emit(f"playground sync failed:\n{detail}", "error", message=detail)
         return 1
     headless("--import")
     check = headless("--script", "res://tools/check.gd")
     counts = next((json.loads(l) for l in check.stdout.splitlines() if l.startswith("{")), None)
     errors = [l for l in check.stderr.splitlines() if "ERROR" in l]
-    if counts is None or errors:
-        emit("playground did not load cleanly", "error", message="\n".join((errors or check.stderr.splitlines())[-40:]))
+    if counts is None or errors or check.returncode != 0:
+        detail = "\n".join((errors or check.stderr.splitlines() or [f"exit {check.returncode}"])[-40:])
+        emit(f"playground did not load cleanly:\n{detail}", "error", message=detail)
         return 1
     emit(f"playground loads: {counts['shaders']} shaders, {counts['sounds']} sounds", "check", **counts)
     if open_after:

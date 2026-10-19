@@ -65,7 +65,7 @@ function JobError({ error }: { error: Error }) {
       <p>{tool === 'python' ? 'Install Python 3 so the factory CLI can run.' : `${tool} not found at "${String(error.body.path ?? '')}" — set it in factory/spec/global.local.yaml.`}</p>
     </div>
   }
-  return <p className="studio-error" role="alert">{error instanceof FactoryError && error.status === 409 ? 'A job is already running for this pack.' : error.message}</p>
+  return <p className="studio-error" role="alert">{error.message}</p>
 }
 
 // Last 500 events of this pack's latest job, newest at the bottom.

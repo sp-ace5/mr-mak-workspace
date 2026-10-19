@@ -245,14 +245,19 @@ test('playground runs the CLI without a pack', async () => {
   } finally { f.close(); }
 });
 
-test('second playground request while one runs returns 409', async () => {
+test('playground and pack jobs never overlap', async () => {
   const f = await fixture();
   try {
     process.env.STUB_MODE = 'slowplay';
     const first = post(`${f.url}/factory/playground`, {});
     await new Promise(resolve => setTimeout(resolve, 300));
     assert.equal((await post(`${f.url}/factory/playground`, {})).status, 409);
-    assert.equal((await job(f, 'build')).status, 200);                      // packs keep their own locks
+    assert.equal((await job(f, 'build')).status, 409);                      // package may be rewriting dist/
     assert.equal((await first).status, 200);
+    process.env.STUB_MODE = 'slow';
+    const building = job(f, 'build');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal((await post(`${f.url}/factory/playground`, {})).status, 409);
+    assert.equal((await building).status, 200);
   } finally { f.close(); }
 });

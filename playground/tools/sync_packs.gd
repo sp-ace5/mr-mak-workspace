@@ -17,34 +17,47 @@ func _init() -> void:
 func _sync(sources: PackedStringArray) -> int:
 	var root := ProjectSettings.globalize_path(ADDONS)
 	DirAccess.make_dir_recursive_absolute(root)
+	# Only real pack ids ever become paths: an empty, "." or ".." entry would reach outside one addon folder.
+	var pack_id := RegEx.create_from_string("^[a-z][a-z0-9_]*$")
 	var before: Array = []
 	if FileAccess.file_exists(LEDGER):
 		var parsed = JSON.parse_string(FileAccess.get_file_as_string(LEDGER))
 		if parsed is Array:
-			before = parsed
+			before = parsed.filter(func(id): return id is String and pack_id.search(id) != null)
 	var now: Array = []
+	var err := OK
 	for source in sources:
 		var src := source.replace("\\", "/").trim_suffix("/")
 		var id := src.get_file()
-		if id.is_empty() or not DirAccess.dir_exists_absolute(src):
-			printerr("not an addon folder: ", source)
-			return ERR_FILE_NOT_FOUND
+		if pack_id.search(id) == null or not DirAccess.dir_exists_absolute(src):
+			printerr("not a pack addon folder: ", source)
+			err = ERR_INVALID_PARAMETER
+			break
+		if DirAccess.dir_exists_absolute(root.path_join(id)) and not before.has(id):
+			printerr("addons/", id, " was installed by hand; not replacing it")
+			err = ERR_ALREADY_EXISTS
+			break
+		now.append(id)   # recorded before copying, so a half-copied folder is still ours to remove later
 		_remove(root.path_join(id))
-		var err := _copy(src, root.path_join(id))
+		err = _copy(src, root.path_join(id))
 		if err != OK:
 			printerr("copy failed for ", id, ": ", error_string(err))
-			return err
-		now.append(id)
+			break
 		print("synced ", id)
+	var owned := now.duplicate()
 	for id in before:
-		if not now.has(id):
-			_remove(root.path_join(str(id)))
+		if owned.has(id):
+			continue
+		if err == OK:
+			_remove(root.path_join(id))
 			print("removed ", id)
+		else:
+			owned.append(id)   # a failed run removes nothing, but keeps track of everything it may own
 	var ledger := FileAccess.open(LEDGER, FileAccess.WRITE)
 	if ledger == null:
 		return FileAccess.get_open_error()
-	ledger.store_string(JSON.stringify(now))
-	return OK
+	ledger.store_string(JSON.stringify(owned))
+	return err
 
 
 func _copy(src: String, dst: String) -> int:

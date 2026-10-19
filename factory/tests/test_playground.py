@@ -65,6 +65,14 @@ def test_playground_loads_synced_addons(playground, tmp_path):
     assert '{"shaders":1,"sounds":0}' in check.stdout.replace(" ", ""), check.stdout + check.stderr
     assert "ERROR" not in check.stderr, check.stderr
 
+    clash = tmp_path / "dist" / "keep_me"                          # same name as the hand-installed addon
+    clash.mkdir()
+    refused = godot(exe, playground, "--script", "res://tools/sync_packs.gd", "--", str(addon), str(clash))
+    assert "err=0" not in refused.stdout and "installed by hand" in refused.stderr, refused.stdout + refused.stderr
+    assert (keep / "plugin.cfg").exists()
+
+    ledger = playground / "addons" / ".factory_synced.json"
+    ledger.write_text(json.dumps(["", "..", ".", "fx_pack"]), encoding="utf-8")   # never a path outside one addon
     again = godot(exe, playground, "--script", "res://tools/sync_packs.gd", "--")
     assert "removed fx_pack" in again.stdout and "err=0" in again.stdout, again.stdout + again.stderr
     assert not (playground / "addons" / "fx_pack").exists()
@@ -113,20 +121,23 @@ def godot_calls(calls, wait_for=None):
 
 
 def seed_packs(fac):
-    """A: approved + packaged. B: approved, never packaged. C: one asset still only passed, packaged."""
+    """A: approved + packaged. B: approved, never packaged. C: one asset still only passed, packaged.
+    D: approved, but packaged before a1 was rejected, so its addon still ships a1."""
     con = sqlite3.connect(fac / "t.db")
     con.executescript((fac / "pipeline" / "schema.sql").read_text(encoding="utf-8"))
-    for pid, statuses in {"pa": ["approved", "rejected"], "pb": ["approved"], "pc": ["approved", "passed"]}.items():
+    for pid, statuses in {"pa": ["approved", "rejected"], "pb": ["approved"], "pc": ["approved", "passed"],
+                            "pd": ["approved", "rejected"]}.items():
         con.execute("INSERT INTO packs (pack_id, category, spec_path, spec_hash) VALUES (?, 'shader', 'x', 'h')", (pid,))
         for i, status in enumerate(statuses):
             con.execute("INSERT INTO assets (asset_id, pack_id, kind, name, status) VALUES (?, ?, 'shader', ?, ?)",
                         (f"{pid}/a{i}", pid, f"a{i}", status))
     con.commit()
     con.close()
-    for pid in ("pa", "pc"):
+    for pid in ("pa", "pc", "pd"):
         staged = fac / "dist" / pid / "addons" / pid
         staged.mkdir(parents=True)
-        (staged / "manifest.json").write_text("[]", encoding="utf-8")
+        shipped = [{"name": "a0"}, {"name": "a1"}] if pid == "pd" else [{"name": "a0"}]   # pd still ships a1
+        (staged / "manifest.json").write_text(json.dumps(shipped), encoding="utf-8")
 
 
 def test_playground_selects_only_approved_packaged(fac, stub_godot):
@@ -145,7 +156,7 @@ def test_playground_open_launches_detached_only_after_check(fac, stub_godot):
     seed_packs(fac)
     r = cli(fac, "playground", "--open", "--json", env={"STUB_CHECK_ERR": "1"})
     assert r.returncode == 1
-    assert any(e["event"] == "error" and "boom" in e.get("message", "") for e in events(r))
+    assert any(e["event"] == "error" and "boom" in e.get("message", "") and "boom" in e["msg"] for e in events(r))
     assert not any(c[:1] == ["--path"] for c in godot_calls(stub_godot))
     r = cli(fac, "playground", "--open", "--json")
     assert r.returncode == 0, r.stdout + r.stderr

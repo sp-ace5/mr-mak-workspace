@@ -106,6 +106,9 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
     // Body first: a client that never finishes sending it must not hold the pack's lock.
     const data = await body(request, 64 * 1024);
     if (jobs.has(key)) throw fail(409, playground ? 'The playground is already being prepared' : `A ${jobs.get(key).cmd} job is already running for ${id}`);
+    // The playground copies dist/ folders that package rewrites: the two never overlap.
+    if (playground && jobs.size) throw fail(409, 'Wait for the running pack jobs to finish, then open the playground');
+    if (!playground && jobs.has('@playground')) throw fail(409, 'The playground is being prepared; try again when it is open');
     // Reserve before the next await so two quick requests cannot both start.
     const job = { cmd, child: null };
     jobs.set(key, job);
