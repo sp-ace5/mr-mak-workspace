@@ -610,7 +610,7 @@ def cmd_publish(con, pack, spec_path, dry_run=False):
         target = f"{user}/{pid}:{channel}"
         cmd = [str(butler), "push", str(path), target]
         emit(f"{'DRY RUN  ' if dry_run else ''}{subprocess.list2cmdline(cmd)}", "push",
-             channel=channel, target=target, cmd=cmd, dry_run=dry_run)
+             channel=channel, target=target, cmd=cmd, dry_run=dry_run, sha256=file_sha)
         if dry_run:
             continue
         p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)   # no login prompt hang
