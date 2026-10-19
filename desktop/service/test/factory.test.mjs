@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import path from 'node:path';
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createFactory } from '../factory.mjs';
 import { stub, writeFactoryFixture } from './fixtures/factory-fixture.mjs';
@@ -189,4 +189,30 @@ test('service requires the bearer token on /factory routes', async () => {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { packs: [] });
   } finally { await service.close(); }
+});
+
+test('publish dry run needs no confirm', async () => {
+  const f = await fixture();
+  try {
+    assert.equal((await job(f, 'publish', { dryRun: 'yes' })).status, 400);
+    assert.deepEqual(await f.calls(), []);
+    assert.equal((await job(f, 'publish', { dryRun: true })).status, 200);
+    assert.deepEqual((await f.calls()).at(-1), ['publish', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json', '--dry-run']);
+    assert.equal((await job(f, 'publish', { confirm: 'me/ui_sfx_v1', dryRun: false })).status, 200);
+    assert.deepEqual((await f.calls()).at(-1), ['publish', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json']);
+  } finally { f.close(); }
+});
+
+test('every job writes a log file', async () => {
+  const f = await fixture();
+  try {
+    await job(f, 'build');
+    const dir = path.join(f.factoryDir, 'build/ui_sfx_v1/jobs');
+    const files = await readdir(dir);
+    assert.equal(files.length, 1);
+    assert.match(files[0], /^\d{8}-\d{6}-build\.log$/);
+    const lines = (await readFile(path.join(dir, files[0]), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(lines.at(-1), { event: 'done', cmd: 'build', exit: 0 });
+    assert.ok(lines.some(line => line.event === 'stderr' && line.msg === 'warn'));
+  } finally { f.close(); }
 });
