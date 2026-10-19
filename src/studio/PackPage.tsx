@@ -86,14 +86,15 @@ export function JobLog({ job }: { job: Job | null }) {
   </>
 }
 
-// Tested against butler's own output only: msg carries the target, which may contain "login".
 // What "Ask agent" drafts into the active chat (spec section 4): the failures, where the source is,
 // and the rules from the asset-factory skill. The user reads it and presses Send.
+// Gate values are flattened to one line each, so a stored value cannot add lines of its own.
+const flat = (value: string | null) => value === null ? '—' : value.replace(/\s+/g, ' ').trim()
 function askText(pack: string, asset: Asset): string {
   const sources = [`factory/spec/packs/${pack}.yaml`, ...(asset.kind === 'shader' ? [`factory/shaders/${pack}/${asset.name}.gdshader`] : [])]
   return [
     `Asset factory: ${pack}/${asset.name} (${asset.kind}) failed its gates on attempt ${asset.attempts}:`,
-    ...asset.gates.filter(gate => !gate.passed).map(gate => `- ${gate.gate}: measured ${gate.measured ?? '—'}, expected ${gate.expected ?? '—'}`),
+    ...asset.gates.filter(gate => !gate.passed).map(gate => `- ${flat(gate.gate)}: measured ${flat(gate.measured)}, expected ${flat(gate.expected)}`),
     `Sources: ${sources.join(', ')}`,
     'Fix the source (generator, shader or spec), never files under factory/build/. Then rebuild with',
     `\`node scripts/run-python.mjs factory/pipeline/run.py build --pack spec/packs/${pack}.yaml --json\`.`,
@@ -109,7 +110,8 @@ function askAgent(pack: string, asset: Asset): Promise<string> {
   )
 }
 
-const LOGIN =/\bbutler login\b|not logged in|credentials/i
+// Tested against butler's own output only: msg carries the target, which may contain "login".
+const LOGIN = /\bbutler login\b|not logged in|credentials/i
 
 function Releases({ releases }: { releases: Release[] }) {
   if (!releases.length) return null

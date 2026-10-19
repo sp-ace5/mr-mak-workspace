@@ -37,7 +37,9 @@ test('a chat draft from the Workspace window reaches the Chats window and is nev
     assert.deepEqual(await ok.json(), { sessionId: session.id, name: 'Draft fixture' });
     await new Promise(resolve => setTimeout(resolve, 100));
     const drafts = events.filter(event => event.type === 'chat-draft');
-    assert.deepEqual(drafts, [{ type: 'chat-draft', sessionId: session.id, text: 'Fix the hover gate' }]);
+    assert.equal(drafts.length, 1);
+    assert.deepEqual({ ...drafts[0], draftId: undefined }, { type: 'chat-draft', sessionId: session.id, text: 'Fix the hover gate', draftId: undefined });
+    assert.match(drafts[0].draftId, /^[0-9a-f-]{36}$/);                             // lets several Chats windows apply it once
     const draftAt = events.indexOf(drafts[0]);
     assert.ok(events.slice(draftAt).some(event => event.type === 'navigate' && event.window === 'chats' && event.sessionId === session.id));
     assert.deepEqual(written, []);                                                   // a draft, never typed into the agent
@@ -46,6 +48,14 @@ test('a chat draft from the Workspace window reaches the Chats window and is nev
     assert.equal((await draft({ text: '   ' })).status, 400);
     assert.equal((await draft({ text: 'x'.repeat(9 * 1024) })).status, 400);
     assert.equal((await draft({ text: 'hi', sessionId: 'nope' })).status, 404);
+    for (const [id, extra] of [['kimi-chat', { agent: 'kimi' }], ['closed-chat', { open: false }]]) {   // no composer / no tab
+      const other = service.sessions.make({ id, name: id, agent: 'codex', cwd: repo, status: 'running', open: true, cols: 80, rows: 30, ...extra });
+      service.sessions.items.set(other.id, other);
+      assert.equal((await draft({ text: 'hi', sessionId: id })).status, 409, id);
+    }
+    ws.close();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal((await draft({ text: 'hi', sessionId: session.id })).status, 409);   // no Chats window to show it
   } finally {
     ws.close();
     await service.close();

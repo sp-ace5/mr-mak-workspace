@@ -65,7 +65,8 @@ try {
   await page.getByRole('status').filter({ hasText: 'Draft added to Factory chat' }).waitFor();
   // Terminal view: no Conversation is open, so the draft waits in storage for the chat.
   await chats.waitForFunction(() => (localStorage.getItem('mrmak.chatDraft.ask-chat') || '').includes('ui_sfx_v1/hover'));
-  await chats.getByRole('group', { name: 'Chat view' }).getByRole('button', { name: 'Conversation' }).click();
+  // ...and the chat switched to its Conversation view by itself, where the composer is.
+  await chats.locator('[aria-label="Chat view"] button[aria-pressed="true"]', { hasText: 'Conversation' }).waitFor();
   const composer = chats.locator('textarea[aria-label="Message Codex"]');
   for (const text of ['ui_sfx_v1/hover', 'peak: measured 0, expected <=-1', 'factory/spec/packs/ui_sfx_v1.yaml', 'Do not run approve or publish'])
     assert.ok((await composer.inputValue()).includes(text), text);
