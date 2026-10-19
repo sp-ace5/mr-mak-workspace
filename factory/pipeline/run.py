@@ -4,12 +4,17 @@ Kill it any time; `build` picks up where it stopped (state lives in factory.db, 
 `approve` = you listened / looked and you're happy: passed assets are frozen and never rebuilt.
 `package` = verifies report exits 0, bundles approved files into dist/<pack>/<pack>.zip ready for itch.io."""
 
-import argparse, hashlib, json, os, pathlib, re, shutil, sqlite3, subprocess, sys, uuid, zipfile
+import argparse, hashlib, json, os, pathlib, re, shutil, sqlite3, subprocess, sys, traceback, uuid, zipfile
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 DB = pathlib.Path(os.environ.get("FACTORY_DB") or ROOT / "factory.db")
+
+JSON = False                      # --json: one event object per stdout line instead of human text
+
+def emit(text, event="log", **fields):
+    print(json.dumps({"event": event, "msg": text, **fields}) if JSON else text, flush=True)
 
 def connect():
     con = sqlite3.connect(DB)
@@ -133,7 +138,7 @@ def cmd_init(con, pack):
                     "text_sha256=excluded.text_sha256, checked_on=excluded.checked_on",
                     {"needs_attribution": 0, "conditions": None, "source_url": None, "text_sha256": None, **lic})
     con.commit()
-    print(f"db ready: {DB}")
+    emit(f"db ready: {DB}", "db", path=str(DB))
 
 def recipe_hash(spec_path):
     """Spec + generator + gate code. Change any of them and the pack rebuilds (except approved assets)."""
@@ -190,14 +195,14 @@ def cmd_build(con, pack, spec_path, max_attempts=3):
     todo = [r for r in rows if r["status"] == "pending" or r["kind"] not in INBOX_KINDS]
     for r in rows:
         if r not in todo:
-            print(f"WAIT  {r['name']}  (failed; fix it where you made it and re-export)")
+            emit(f"WAIT  {r['name']}  (failed; fix it where you made it and re-export)", "wait", asset=r["name"])
     known = {r[0] for r in con.execute("SELECT license_id FROM licenses")}
     for row in todo:
         attempt = row["attempts"] + 1
         params = json.loads(row["params_json"])
         out, prov = PRODUCERS[row["kind"]](row, params, attempt, out_dir)
         if out is None:                                 # nothing new to check; attempt not used up
-            print(f"WAIT  {row['name']}  ({prov})")
+            emit(f"WAIT  {row['name']}  ({prov})", "wait", asset=row["name"])
             continue
         if prov["license_id"] not in known:            # a typo or a license nobody has reviewed: block it
             prov["license_id"] = "unknown"
@@ -218,8 +223,9 @@ def cmd_build(con, pack, spec_path, max_attempts=3):
                     ("passed" if ok else "failed", attempt, str(out), out_sha, run_id,
                      json.dumps({**params, "metrics": metrics}), row["asset_id"]))
         con.commit()                        # commit per asset = resumable
-        print(f"{'PASS' if ok else 'FAIL'}  {row['name']}  " +
-              ", ".join(f"{n}={m}" for n, p, m, e in results if not p))
+        failed = [{"gate": n, "measured": m, "expected": e} for n, p, m, e in results if not p]
+        emit(f"{'PASS' if ok else 'FAIL'}  {row['name']}  " + ", ".join(f"{f['gate']}={f['measured']}" for f in failed),
+             "gate", asset=row["name"], ok=ok, failed=failed)
     pack_level_gates(con, pack, recipe)
 
 def pack_level_gates(con, pack, recipe):
@@ -253,7 +259,7 @@ def cmd_approve(con, pack, names=None):
         args += names
     n = con.execute(q, args).rowcount
     con.commit()
-    print(f"approved {n} asset(s)")
+    emit(f"approved {n} asset(s)", "approved", count=n)
 
 def cmd_report(con, pack):
     pid = pack["pack_id"]
@@ -290,7 +296,8 @@ def cmd_report(con, pack):
     manifest = [{"name": a["name"], "kind": a["kind"], "file": pathlib.Path(a["output_path"]).name,
                  "sha256": a["output_sha256"], **json.loads(a["params_json"]).get("metrics", {})} for a in passed]
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
-    print(f"wrote {out / 'VERIFY.md'}  ({len(passed)}/{len(assets)} passed, {len(blockers)} license blockers)")
+    emit(f"wrote {out / 'VERIFY.md'}  ({len(passed)}/{len(assets)} passed, {len(blockers)} license blockers)", "report",
+         path=str(out / "VERIFY.md"), passed=len(passed), total=len(assets), blockers=len(blockers))
     return 0 if not blockers and len(passed) == len(assets) else 1
 
 def godot_randomizers(stage_dir, pid):
@@ -312,7 +319,7 @@ def godot_randomizers(stage_dir, pid):
         raise RuntimeError(f"make_randomizers failed:\n{p.stdout}\n{p.stderr}")
     for t in tres:
         shutil.copy2(t, stage_dir / t.name)
-    print(f"randomizers: {', '.join(t.name for t in tres)}")
+    emit(f"randomizers: {', '.join(t.name for t in tres)}")
 
 UNIFORM = re.compile(r"^\s*uniform\s+(\w+)\s+(\w+)\s*(?::\s*([^=;]+?))?\s*(?:=\s*([^;]+?))?\s*;", re.M)
 
@@ -369,7 +376,7 @@ def web_demo(stage_dir, pack, godot):
     pid = pack["pack_id"]
     tpl = export_template(pack.get("engine_target", "godot-4.5"))
     if not tpl.exists():
-        print(f"SKIP web demo: no export templates at {tpl.parent}")
+        emit(f"SKIP web demo: no export templates at {tpl.parent}", "skip")
         return
     proj = ROOT / "build" / pid / "web"
     if proj.exists():
@@ -396,12 +403,13 @@ def web_demo(stage_dir, pack, godot):
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in out.iterdir():
             zf.write(f, f.name)
-    print(f"web demo: {zip_path}")
+    emit(f"web demo: {zip_path}", "web_demo", path=str(zip_path))
 
 def cmd_package(con, pack):
     """Verifies report is 0, then packages all approved/passed files + VERIFY.md + manifest.json into dist/<id>/<id>.zip."""
     if cmd_report(con, pack) != 0:
-        print("PACKAGE ABORTED: report has failing assets or license blockers.")
+        emit("PACKAGE ABORTED: report has failing assets or license blockers.", "refused",
+             reason="report has failing assets or license blockers")
         return 1
     pid = pack["pack_id"]
     dist_dir = ROOT / "dist" / pid
@@ -426,23 +434,39 @@ def cmd_package(con, pack):
         for f in stage_dir.rglob("*"):
             if f.is_file():
                 zf.write(f, f.relative_to(dist_dir))
-    print(f"packaged: {zip_path} ({len(assets)} assets)")
+    emit(f"packaged: {zip_path} ({len(assets)} assets)", "packaged", path=str(zip_path), assets=len(assets))
     return 0
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["init", "build", "approve", "report", "package"])
-    ap.add_argument("--pack", required=True)
-    ap.add_argument("--only", nargs="*", help="approve: just these asset names")
-    a = ap.parse_args()
+def run(a):
     spec_path = ROOT / a.pack
     pack = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
     con = connect()
     if a.cmd == "init":    cmd_init(con, pack)
     if a.cmd == "build":   cmd_build(con, pack, spec_path)
     if a.cmd == "approve": cmd_approve(con, pack, a.only)
-    if a.cmd == "report":  sys.exit(cmd_report(con, pack))
-    if a.cmd == "package": sys.exit(cmd_package(con, pack))
+    if a.cmd == "report":  return cmd_report(con, pack)
+    if a.cmd == "package": return cmd_package(con, pack)
+    return 0
+
+def main():
+    global JSON
+    ap = argparse.ArgumentParser()
+    ap.add_argument("cmd", choices=["init", "build", "approve", "report", "package"])
+    ap.add_argument("--pack", required=True)
+    ap.add_argument("--only", nargs="*", help="approve: just these asset names")
+    ap.add_argument("--json", action="store_true", help="one JSON event per stdout line")
+    a = ap.parse_args()
+    JSON = a.json
+    try:
+        code = run(a)
+    except Exception as e:
+        traceback.print_exc()                       # human mode: the traceback is the whole report
+        code = 1
+        if JSON:
+            emit(str(e), "error", message=str(e))
+    if JSON:
+        print(json.dumps({"event": "done", "cmd": a.cmd, "exit": code}), flush=True)
+    return code
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
