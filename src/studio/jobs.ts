@@ -31,6 +31,10 @@ export function startJob(pack: string, cmd: JobCommand, body: object = {}): Prom
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }
 export const useJob = (pack: string) => useSyncExternalStore(subscribe, () => jobs.get(pack) ?? null)
 
+// A dry run holds the pack's server lock too, even after its dialog is closed or the page left.
+const previewing = new Set<string>()
+export const usePreviewing = (pack: string) => useSyncExternalStore(subscribe, () => previewing.has(pack))
+
 export interface DryRun { pushes: JobEvent[]; refusal: string | null; error: string | null }
 
 // `publish --dry-run` pushes nothing: it lists the exact targets and file hashes,
@@ -39,11 +43,13 @@ export interface DryRun { pushes: JobEvent[]; refusal: string | null; error: str
 export function dryRun(id: string): Promise<DryRun> {
   const pushes: JobEvent[] = []
   let refusal: string | null = null
+  previewing.add(id)
+  listeners.forEach(listener => listener())
   return runJob(id, 'publish', { dryRun: true }, event => {
     if (event.event === 'push') pushes.push(event)
     if (event.event === 'refused') refusal = String(event.reason ?? event.msg ?? 'refused')
   }).then(
     done => ({ pushes, refusal, error: done.exit === 0 || refusal ? null : `Dry run failed (exit ${done.exit ?? '?'})` }),
     error => ({ pushes: [], refusal: null, error: error instanceof Error ? error.message : String(error) }),
-  )
+  ).finally(() => { previewing.delete(id); listeners.forEach(listener => listener()) })
 }

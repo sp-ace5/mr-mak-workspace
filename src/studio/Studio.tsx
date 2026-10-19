@@ -8,14 +8,16 @@ import './studio.css'
 const PLAYGROUND = '@playground'   // job-store key; never a pack id
 
 // #/@studio → pack list, #/@studio/<pack_id> → pack page.
-const packFromHash = () => decodeURIComponent(location.hash.replace(/^#\/?@studio\/?/, '').split('/')[0] || '') || null
+const packFromHash = () => {
+  try { return decodeURIComponent(location.hash.replace(/^#\/?@studio\/?/, '').split('/')[0] || '') || null }
+  catch { return null }   // a malformed link (#/@studio/%E0) shows the pack list
+}
 
 function PackList() {
   const { data, error } = usePoll(() => factory<{ packs: PackSummary[] }>('/packs'), 'packs')
-  if (error) return <p className="studio-error" role="alert">{error}</p>
-  if (!data) return <p className="studio-muted">Loading packs…</p>
+  if (!data) return error ? <p className="studio-error" role="alert">{error}</p> : <p className="studio-muted">Loading packs…</p>
   if (!data.packs.length) return <p className="studio-muted">No packs yet — create one with <code>run.py new</code>.</p>
-  return <ul className="studio-packs">
+  return <>{error && <p className="studio-error" role="alert">{error}</p>}<ul className="studio-packs">
     {data.packs.map(pack => <li key={pack.pack_id}>
       <a href={`#/@studio/${encodeURIComponent(pack.pack_id)}`}>{pack.pack_id}</a>
       <span className="studio-muted">{pack.category}</span>
@@ -23,7 +25,7 @@ function PackList() {
       {pack.blockers > 0 && <span className="studio-chip blocker">{pack.blockers} blockers</span>}
       {pack.last_release && <span className="studio-muted">last release {pack.last_release.target} · {pack.last_release.created_at}</span>}
     </li>)}
-  </ul>
+  </ul></>
 }
 
 // Syncs every approved, packaged pack into playground/, checks it loads, then opens Godot on it.

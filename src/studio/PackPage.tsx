@@ -4,7 +4,7 @@ import type { Preview } from '../desktop/types'
 import { MarkdownView } from '../components/MarkdownDocument'
 import { cancelJob, factory, FactoryError, factoryPath, type Asset, type JobCommand, type JobEvent, type PackDetail, type Release } from './api'
 import PublishDialog from './PublishDialog'
-import { dryRun, startJob, useJob, type DryRun, type Job } from './jobs'
+import { dryRun, startJob, useJob, usePreviewing, type DryRun, type Job } from './jobs'
 import { loadPreview, usePoll, usePreview } from './poll'
 
 const STATUSES = ['pending', 'failed', 'passed', 'approved', 'rejected']
@@ -20,15 +20,9 @@ function Toolbar({ id, pack, repo, job, selected, version }: { id: string; pack:
   const [note, setNote] = useState('')
   const [publishing, setPublishing] = useState<Promise<DryRun> | null>(null)
   const demo = usePreview(factoryPath(repo, `dist/${id}/web_demo/index.html`), version)
-  // A dry run holds the pack's server lock too, even after its dialog is cancelled.
-  const [previewing, setPreviewing] = useState(false)
+  const previewing = usePreviewing(id)
   const busy = !!job?.running || previewing
-  const openPublish = () => {
-    const preview = dryRun(id)
-    setPreviewing(true)
-    void preview.finally(() => setPreviewing(false))
-    setPublishing(preview)
-  }
+  const openPublish = () => setPublishing(dryRun(id))
   const passed = pack.assets.filter(asset => asset.status === 'passed').map(asset => asset.name)
   const picked = [...selected].filter(name => passed.includes(name))
   const run = (cmd: JobCommand, body: object = {}) => { setNote(''); return startJob(id, cmd, body) }
@@ -173,11 +167,12 @@ export default function PackPage({ id }: { id: string }) {
   // Changes when a build ran (here or from a terminal), so previews refetch.
   const version = pack ? `${refresh}:${pack.assets.map(asset => `${asset.status}${asset.attempts}`).join()}:${pack.releases.length}` : `${refresh}`
   const verify = usePreview(factoryPath(repo, `dist/${id}/VERIFY.md`), version)
-  if (error) return <p className="studio-error" role="alert">{error}</p>
-  if (!pack) return <p className="studio-muted">Loading {id}…</p>
+  // A failed poll keeps the last good page (and a running job's Cancel) on screen, with the error above it.
+  if (!pack) return error ? <p className="studio-error" role="alert">{error}</p> : <p className="studio-muted">Loading {id}…</p>
   const counts: Record<string, number> = {}
   for (const asset of pack.assets) counts[asset.status] = (counts[asset.status] || 0) + 1
   return <>
+    {error && <p className="studio-error" role="alert">{error}</p>}
     <Chips counts={counts} shipped={pack.releases.length > 0} />
     <Toolbar id={id} pack={pack} repo={repo} job={job} selected={selected} version={version} />
     <JobLog pack={id} job={job} />
