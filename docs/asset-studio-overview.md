@@ -124,11 +124,24 @@ itch:
 
 Tests never run a real upload, approve or publish on real packs; they replace the CLI or butler with a stub.
 
+## Added after step 6 (PRs #8, #9)
+
+- **Ask agent:** on a failing asset, puts its gate failures and source paths into the active Claude or Codex chat as a draft. It is never sent; you press Send.
+- **Cancel:** stops a stuck job and every process it started. Stopping approve or publish asks first.
+- **Publish only what you saw:** the real upload carries the hashes the preview showed and is refused if any file changed since.
+- **Playground:** also places VFX scenes, mesh kits (0.5 m grid) and UI themes, and has an Esc pause menu.
+- **Safer CLI:**
+  - a spec's `pack_id` must match its file name
+  - approve needs a build under the current recipe
+  - license edits force a rebuild
+  - a crashing gate fails only its own asset
+  - the dry run writes nothing
+- **Service:** jobs keep running if the app quits mid-upload, and `done` is always the last event.
+
 ## Not done yet
 
-- **First real upload:** no real butler push has run yet. Do the first one yourself, watching, to a draft or restricted itch.io page.
-- **Playground window:** the playground has only run headless. The footstep and sound-panel paths have no automated test.
-- **Ask agent:** sending a failing asset's gate results to a chat as a draft isn't built, because the Workspace window has no way to reach the Chats composer.
+- **First real upload:** no real butler push has run yet. Do the first one yourself, watching, to a draft or restricted itch.io page. If butler isn't logged in, run `butler login` once.
+- **Playground window:** the playground has only run headless; open it once from the Studio to check walking and sounds.
 - **Release build ids:** butler's build id isn't saved in `releases.butler_build` yet; that needs a real upload to learn the output format.
-- **Other content types:** the playground doesn't place VFX scenes, UI themes or mesh kits yet.
-- **Hung jobs:** a stuck CLI job holds its pack's lock until the service restarts. There is no cancel button.
+- **Mesh gate:** `inbox_mesh` packs can't pass a build yet, because the mesh gate and its Blender scripts don't exist. A mesh build now fails per asset with `gate_error` instead of crashing.
+- **Godot version:** not part of the recipe hash, so an engine upgrade doesn't force a rebuild.
