@@ -11,7 +11,6 @@ import { serveFile } from './files.mjs';
 
 const PACK_ID = /^[a-z][a-z0-9_]*$/;
 // Tool each command needs before it can do anything useful.
-// ponytail: mesh packs also need Blender on build; add when the first mesh pack ships.
 const COMMANDS = { build: 'godot', approve: null, package: 'godot', listing: null, publish: 'butler' };
 const ASSET_NAME = /^[\w.][\w.-]*$/;
 const CONFIG = 'import json; from pipeline.run import global_spec; print(json.dumps(global_spec()))';
@@ -23,7 +22,7 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
   function read(query) {
     let con;
     try {
-      con = new DatabaseSync(db, { readOnly: true });
+      con = new DatabaseSync(db, { readOnly: true, timeout: 1000 });   // wait out a CLI commit before 503
       return query(con);
     } catch (error) {
       if (error.errcode === 5 || /database is locked/i.test(error.message)) throw fail(503, 'Factory database is busy; retry on the next poll', { retry: true });
@@ -79,8 +78,11 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       let stdout = '', stderr = '';
       child.stdout.on('data', chunk => { stdout += chunk; });
       child.stderr.on('data', chunk => { stderr += chunk; });
-      child.on('error', error => reject(fail(424, `Python could not start: ${error.message}`, { tool: 'python', path: runner[0] })));
+      // A hung interpreter must not hold the pack's lock forever.
+      const timer = setTimeout(() => { child.kill(); reject(fail(504, 'Python did not answer within 30 s while reading the factory config')); }, 30000);
+      child.on('error', error => { clearTimeout(timer); reject(fail(424, `Python could not start: ${error.message}`, { tool: 'python', path: runner[0] })); });
       child.on('close', code => {
+        clearTimeout(timer);
         if (/Python 3 not found/.test(stderr)) return reject(fail(424, 'Python 3 not found', { tool: 'python', path: stderr.trim().split('Tried: ')[1] || '' }));
         try { if (code === 0) return resolve(JSON.parse(stdout)); } catch { /* reported below */ }
         reject(fail(500, `Factory config could not be read: ${stderr.trim().split('\n').slice(-3).join(' ') || `exit ${code}`}`));
@@ -126,9 +128,18 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       const dryRun = cmd === 'publish' && data.dryRun === true;
       if (dryRun) args.push('--dry-run');
       if (cmd === 'publish' && !dryRun && typeof data.confirm !== 'string') throw fail(400, 'publish needs {confirm: "<itch.user>/<pack>"}');
+      // What the dry run showed (channel:sha256); the CLI refuses if the files changed since.
+      if (data.expect !== undefined) {
+        if (cmd !== 'publish' || dryRun || !Array.isArray(data.expect) || data.expect.length > 8 || !data.expect.every(pair => typeof pair === 'string' && /^[a-z0-9-]+:[0-9a-f]{64}$/.test(pair)))
+          throw fail(400, 'expect is a list of channel:sha256 pairs for a real publish');
+        args.push('--expect', ...data.expect);
+      }
       const settings = await config();
       const tool = playground ? 'godot' : COMMANDS[cmd];
       if (tool) await needTool(tool, settings.tools?.[tool]);
+      // Mesh packs are inspected in Blender during build (category from the DB; unknown before the first build).
+      if (cmd === 'build' && read(con => con.prepare('SELECT category FROM packs WHERE pack_id = ?').get(id))?.category === 'mesh')
+        await needTool('blender', settings.tools?.blender);
       if (cmd === 'publish') {
         const user = settings.itch?.user;
         if (!user) throw fail(424, 'itch.user is not set; put it in factory/spec/global.local.yaml', { tool: 'itch.user', path: '' });
@@ -138,7 +149,10 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
       const logDir = path.join(factoryDir, 'build', playground ? '_playground' : id, 'jobs');
       job.log = await mkdir(logDir, { recursive: true }).then(() => createWriteStream(path.join(logDir, `${stamp}-${cmd}${dryRun ? '-dry-run' : ''}.log`), { flags: 'a' }), error => error);
-      job.child = spawn(runner[0], [...runner[1], ...args], { cwd: repo, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      if (job.cancelled) throw fail(409, 'Cancelled before it started');
+      // Detached: a job outlives the service (quitting the app mid-publish must not cut an upload short; the CLI
+      // ignores the closed pipe and finishes). On POSIX it is also its own process group, so cancel stops it all.
+      job.child = spawn(runner[0], [...runner[1], ...args], { cwd: repo, windowsHide: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) { jobs.delete(key); job.log?.end?.(); throw error; }
 
     try {
@@ -158,21 +172,35 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
           let event;
           try { event = JSON.parse(line); } catch { /* plain text */ }
           if (!event || typeof event !== 'object' || Array.isArray(event) || typeof event.event !== 'string') event = { event: 'log', msg: line };
-          if (event.event === 'done') done = event;
-          send(event);
+          if (event.event === 'done') done = event;   // held back: stderr may still be draining
+          else send(event);
         }),
         lines(job.child.stderr, line => send({ event: 'stderr', msg: line })),
       ]);
       const code = await new Promise(resolve => {
         job.child.on('error', error => { send({ event: 'error', message: error.message }); resolve(1); });
-        job.child.on('close', resolve);
+        job.child.on('close', code => { job.exited = true; resolve(code); });
       });
       await outputs;
       // No done line (argparse error, Ctrl-C, crash) or an exit that contradicts it means failure.
-      if (typeof done?.exit !== 'number' || done.exit !== code) send({ event: 'done', cmd, exit: code || 1, synthetic: true });
+      if (job.cancelled) send({ event: 'cancelled', msg: 'cancelled by the user' });
+      // done is always the last frame: the CLI's own when it matches the exit code, else a synthetic failure.
+      send(typeof done?.exit === 'number' && done.exit === code ? done : { event: 'done', cmd, exit: code || 1, synthetic: true });
       await new Promise(resolve => job.log ? job.log.end(resolve) : resolve());   // log complete before the client sees the end
       response.end();
     } finally { jobs.delete(key); job.log?.end(); }
+  }
+
+  // Stops a job and everything it started. The job's stream then ends with "cancelled" and a failed done.
+  function cancel(key) {
+    const job = jobs.get(key);
+    if (!job || job.exited) throw fail(409, 'Nothing is running to cancel');
+    job.cancelled = true;
+    if (!job.child) return { cancelled: true };   // still preparing: startJob stops before spawning
+    if (process.platform === 'win32') spawn('taskkill', ['/PID', String(job.child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+      .on('error', () => job.child.kill());
+    else try { process.kill(-job.child.pid, 'SIGTERM'); } catch { job.child.kill('SIGTERM'); }
+    return { cancelled: true };
   }
 
   async function handle(request, response, url) {
@@ -187,17 +215,21 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       }
       if (['GET', 'HEAD'].includes(method) && url.pathname === '/factory/file') return await file(request, response, url.searchParams.get('path')), true;
       const action = /^\/factory\/packs\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+      if (method === 'POST' && action?.[2] === 'cancel') {
+        if (!PACK_ID.test(action[1])) throw fail(400, 'Invalid pack id');
+        return json(response, 200, cancel(action[1])), true;
+      }
+      if (method === 'POST' && url.pathname === '/factory/playground/cancel') return json(response, 200, cancel('@playground')), true;
       if (method === 'POST' && action) return await startJob(request, response, action[1], action[2]), true;
       if (method === 'POST' && url.pathname === '/factory/playground') return await startJob(request, response, null, 'playground'), true;
       throw fail(404, 'Endpoint not found');
     } catch (error) {
-      if (!response.headersSent) json(response, error.status || 400, { error: publicError(error), ...error.extra });
+      if (!response.headersSent) json(response, error.status || 500, { error: publicError(error), ...error.extra });
     }
     return true;
   }
 
-  // Jobs are not killed: killing the run-python.mjs wrapper would orphan Python mid-publish.
-  // ponytail: output after the service exits is lost and a hung CLI holds its pack's 409
-  // until restart; step 5 adds job log files, add a watchdog/cancel route if hangs show up.
+  // Jobs are detached and not killed on service exit; only an explicit cancel stops one.
+  // ponytail: events after the service exits are not logged (the CLI keeps working); tail a CLI-written log if that matters.
   return { handle };
 }

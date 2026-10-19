@@ -11,10 +11,21 @@ export function usePoll<T>(load: () => Promise<T>, key: string, refresh = 0) {
   const [state, setState] = useState<{ key: string; data: T | null; error: string | null }>({ key, data: null, error: null })
   useEffect(() => {
     let alive = true
-    const tick = () => document.hidden ? undefined : load().then(
-      data => { if (alive) setState({ key, data, error: null }) },
-      error => { if (alive && !(error instanceof FactoryError && error.status === 503)) setState(s => ({ key, data: s.key === key ? s.data : null, error: error.message })) },
-    )
+    // Requests can overlap on a slow DB; only a response newer than the last one shown may replace it.
+    let sent = 0, shown = 0
+    const fresh = (seq: number) => {
+      if (!alive || seq <= shown) return false
+      shown = seq
+      return true
+    }
+    const tick = () => {
+      if (document.hidden) return
+      const seq = ++sent
+      load().then(
+        data => { if (fresh(seq)) setState({ key, data, error: null }) },
+        error => { if (!(error instanceof FactoryError && error.status === 503) && fresh(seq)) setState(s => ({ key, data: s.key === key ? s.data : null, error: error.message })) },
+      )
+    }
     tick()
     const timer = setInterval(tick, POLL_MS)
     return () => { alive = false; clearInterval(timer) }

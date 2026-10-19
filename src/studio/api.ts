@@ -24,6 +24,13 @@ async function fail(response: Response): Promise<never> {
   throw new FactoryError(response.status, await response.json().catch(() => ({})))
 }
 
+// Stops a running job and its whole process tree; its stream then ends with a failed done.
+export async function cancelJob(pack: string): Promise<void> {
+  const url = pack === '@playground' ? '/factory/playground/cancel' : `/factory/packs/${encodeURIComponent(pack)}/cancel`
+  const response = await fetch(url, { method: 'POST', headers: authHeader() })
+  if (!response.ok) await fail(response)
+}
+
 export async function factory<T>(path: string): Promise<T> {
   const response = await fetch(`/factory${path}`, { headers: authHeader() })
   if (!response.ok) await fail(response)

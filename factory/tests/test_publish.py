@@ -2,6 +2,8 @@
 import hashlib
 import json
 import os
+import pathlib
+import shutil
 import sqlite3
 import sys
 import zipfile
@@ -220,3 +222,76 @@ def test_package_clears_stale_web_demo(fac):
     assert (fac / "dist" / "t_sfx" / "t_sfx.zip").exists()
     assert not old.exists()
     assert not (fac / "dist" / "t_sfx" / "t_sfx_web.zip").exists()
+
+
+def test_refuses_pack_with_no_approved_assets(fac, butler):
+    """Every asset rejected: report, approvals and an empty manifest all agree, but there is nothing to sell."""
+    exe, calls = butler
+    pack = built_sfx(fac)
+    con = sqlite3.connect(fac / "t.db")
+    con.execute("UPDATE assets SET status='rejected' WHERE pack_id='t_sfx'")
+    con.commit()
+    con.close()
+    fake_zip(fac)
+    assert_refused(publish(fac, pack), fac, calls, "no approved assets")
+
+
+def test_dry_run_writes_nothing(fac, butler):
+    """A preview: no VERIFY.md, manifest or wiki copy is (re)written, while the report check still runs."""
+    pack = built_sfx(fac)
+    fake_zip(fac)
+    dist = fac / "dist" / "t_sfx"
+    for name in ("VERIFY.md", "manifest.json"):
+        (dist / name).unlink(missing_ok=True)
+    shutil.rmtree(fac / "wiki", ignore_errors=True)
+    r = publish(fac, pack, "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (dist / "VERIFY.md").exists() and not (dist / "manifest.json").exists()
+    assert not (fac / "wiki").exists()
+
+
+def test_relative_butler_path_resolves_against_factory(fac, butler):
+    exe, calls = butler
+    pack = built_sfx(fac)
+    fake_zip(fac)
+    rel = os.path.relpath(exe, fac)                  # e.g. ..\butler.cmd; the CLI runs with cwd = repo root
+    (fac / "spec" / "global.local.yaml").write_text(
+        f"tools: {{butler: {json.dumps(rel)}}}\nitch: {{user: tester}}\n", encoding="utf-8")
+    r = publish(fac, pack, "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert [e["cmd"][0] for e in events(r) if e["event"] == "push"][0] == str(exe)
+
+
+def test_publish_refuses_when_files_changed_since_the_preview(fac, butler):
+    """--expect carries the channel:sha256 pairs the user saw in the dry run; anything else is not what they confirmed."""
+    exe, calls = butler
+    pack = built_sfx(fac)
+    z = fake_zip(fac)
+    seen = [f"{e['channel']}:{e['sha256']}" for e in events(publish(fac, pack, "--dry-run")) if e["event"] == "push"]
+    (fac / "dist" / "t_sfx" / "web_demo").mkdir()                 # a channel appears after the preview
+    (fac / "dist" / "t_sfx" / "web_demo" / "index.html").write_text("<html>", encoding="utf-8")
+    assert_refused(publish(fac, pack, "--expect", *seen), fac, calls, "changed since the preview")
+    (fac / "dist" / "t_sfx" / "web_demo" / "index.html").unlink()
+    (fac / "dist" / "t_sfx" / "web_demo").rmdir()
+    r = publish(fac, pack, "--expect", *seen)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert calls_made(calls) == [["push", str(z), "tester/t_sfx:godot-addon"]]
+
+
+def test_dry_run_on_a_fresh_checkout_refuses_cleanly(fac, butler):
+    """No factory.db yet: a refusal, not a crash, and no database file created by a preview."""
+    assert cli(fac, "new", "--kind", "ui_sfx", "--id", "t_sfx").returncode == 0
+    r = publish(fac, ("--pack", "spec/packs/t_sfx.yaml"), "--dry-run")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert any(e["event"] == "refused" and "never built" in e["reason"] for e in events(r)), r.stdout
+    assert not (fac / "t.db").exists()
+
+
+def test_bare_butler_name_is_found_on_path(fac, butler):
+    exe, calls = butler
+    pack = built_sfx(fac)
+    fake_zip(fac)
+    (fac / "spec" / "global.local.yaml").write_text(f"tools: {{butler: {exe.stem}}}\nitch: {{user: tester}}\n", encoding="utf-8")
+    r = publish(fac, pack, "--dry-run", env={"PATH": f"{exe.parent}{os.pathsep}{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert pathlib.Path([e["cmd"][0] for e in events(r) if e["event"] == "push"][0]).samefile(exe)

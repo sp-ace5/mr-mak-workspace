@@ -14,7 +14,10 @@ DB = pathlib.Path(os.environ.get("FACTORY_DB") or ROOT / "factory.db")
 JSON = False                      # --json: one event object per stdout line instead of human text
 
 def emit(text, event="log", **fields):
-    print(json.dumps({"event": event, "msg": text, **fields}) if JSON else text, flush=True)
+    try:
+        print(json.dumps({"event": event, "msg": text, **fields}) if JSON else text, flush=True)
+    except OSError:          # the desktop service went away mid-job: finish the work, nobody is reading anyway
+        pass
 
 def connect():
     con = sqlite3.connect(DB)
@@ -35,7 +38,13 @@ def global_spec():
     """global.yaml, overlaid with the gitignored global.local.yaml (this machine's tool paths, itch user)."""
     g = yaml.safe_load((ROOT / "spec" / "global.yaml").read_text(encoding="utf-8"))
     local = ROOT / "spec" / "global.local.yaml"
-    return merge(g, yaml.safe_load(local.read_text(encoding="utf-8")) or {}) if local.exists() else g
+    g = merge(g, yaml.safe_load(local.read_text(encoding="utf-8")) or {}) if local.exists() else g
+    # A relative tool path (one with a folder in it) means "relative to factory/", whatever the caller's cwd.
+    # A bare name such as "butler" is left for PATH.
+    for name, value in (g.get("tools") or {}).items():
+        if isinstance(value, str) and value and re.search(r"[\\/]", value) and not pathlib.Path(value).is_absolute():
+            g["tools"][name] = str((ROOT / value).resolve())
+    return g
 
 # ---------- producers: (asset row, params, attempt, out_dir) -> (output_path, provenance dict) ----------
 
@@ -128,6 +137,12 @@ GATES = {"ui_sfx": gate_ui_sfx, "inbox_mesh": gate_inbox_mesh, "shader": gate_sh
 # ---------- commands ----------
 
 def cmd_init(con, pack):
+    sync_licenses(con)
+    emit(f"db ready: {DB}", "db", path=str(DB))
+
+def sync_licenses(con):
+    """Schema plus global.yaml's license table. Build runs it too: the Studio never runs init, and a license
+    edit must reach the blocker check (the edit also changes the recipe hash, so publish waits for that build)."""
     con.executescript((ROOT / "pipeline" / "schema.sql").read_text(encoding="utf-8"))
     g = global_spec()
     for lic in g["licenses"]:
@@ -138,15 +153,22 @@ def cmd_init(con, pack):
                     "text_sha256=excluded.text_sha256, checked_on=excluded.checked_on",
                     {"needs_attribution": 0, "conditions": None, "source_url": None, "text_sha256": None, **lic})
     con.commit()
-    emit(f"db ready: {DB}", "db", path=str(DB))
 
 def recipe_hash(spec_path):
     """Spec + generator + gate code. Change any of them and the pack rebuilds (except approved assets)."""
     h = hashlib.sha256(pathlib.Path(spec_path).read_bytes())
     pid = yaml.safe_load(pathlib.Path(spec_path).read_text(encoding="utf-8"))["pack_id"]
-    for f in sorted((ROOT / "generators").glob("*.py")) + sorted((ROOT / "pipeline" / "gates").glob("*.py")) \
-            + sorted((ROOT / "shaders" / pid).glob("*")):
-        h.update(f.read_bytes())
+    # All pipeline code (run.py, audio_io, gates) and the Godot harness sources decide gate results too.
+    # Generated harness folders (.godot, addons, pack) and import caches are skipped.
+    # ponytail: the Godot executable's version is not hashed; add it if an engine upgrade ever changes results.
+    harness = [p for p in (ROOT / "godot_harness").rglob("*") if p.is_file()
+               and not {".godot", "addons", "pack"} & set(p.relative_to(ROOT / "godot_harness").parts)
+               and p.suffix not in (".uid", ".import")]
+    for f in sorted((ROOT / "generators").glob("*.py")) + sorted((ROOT / "pipeline").rglob("*.py")) \
+            + sorted(harness) + sorted((ROOT / "shaders" / pid).glob("*")):
+        h.update(f.relative_to(ROOT).as_posix().encode() + b"\0" + f.read_bytes())
+    # The license table decides which provenance blocks a sale.
+    h.update(json.dumps(global_spec().get("licenses", []), sort_keys=True).encode())
     return h.hexdigest()
 
 def register(con, pack, spec_path):
@@ -185,6 +207,7 @@ def refresh_inbox(con, pack):
     con.commit()
 
 def cmd_build(con, pack, spec_path, max_attempts=3):
+    sync_licenses(con)
     register(con, pack, spec_path)
     refresh_inbox(con, pack)
     recipe = recipe_hash(spec_path)
@@ -200,33 +223,48 @@ def cmd_build(con, pack, spec_path, max_attempts=3):
     for row in todo:
         attempt = row["attempts"] + 1
         params = json.loads(row["params_json"])
-        out, prov = PRODUCERS[row["kind"]](row, params, attempt, out_dir)
-        if out is None:                                 # nothing new to check; attempt not used up
-            emit(f"WAIT  {row['name']}  ({prov})", "wait", asset=row["name"])
-            continue
-        if prov["license_id"] not in known:            # a typo or a license nobody has reviewed: block it
-            prov["license_id"] = "unknown"
-        out_sha, run_id = sha256(out), uuid.uuid4().hex
-        con.execute("INSERT INTO provenance (asset_id, run_id, step, tool, tool_version, model, model_version, seed, "
-                    "prompt_sha256, service_plan, license_id, ai_generated, cost_usd, external_ref, output_sha256) "
-                    "VALUES (:a,:run,:step,:tool,:tool_version,:model,:model_version,:seed,:prompt_sha256,"
-                    ":service_plan,:license_id,:ai_generated,:cost_usd,:external_ref,:sha)",
-                    {"model": None, "model_version": None, "prompt_sha256": None, "service_plan": None,
-                     "cost_usd": 0, "external_ref": None, "tool_version": None, "seed": None,
-                     **prov, "a": row["asset_id"], "run": run_id, "sha": out_sha})
-        results, metrics = GATES[row["kind"]](out, pack, params)
-        con.executemany("INSERT INTO gate_results (asset_id, attempt, recipe, gate, passed, measured, expected) "
-                        "VALUES (?,?,?,?,?,?,?)", [(row["asset_id"], attempt, recipe, *res) for res in results])
-        ok = all(res[1] for res in results)
-        con.execute("UPDATE assets SET status=?, attempts=?, output_path=?, output_sha256=?, run_id=?, "
-                    "params_json=?, updated_at=datetime('now') WHERE asset_id=?",
-                    ("passed" if ok else "failed", attempt, str(out), out_sha, run_id,
-                     json.dumps({**params, "metrics": metrics}), row["asset_id"]))
-        con.commit()                        # commit per asset = resumable
-        failed = [{"gate": n, "measured": m, "expected": e} for n, p, m, e in results if not p]
-        emit(f"{'PASS' if ok else 'FAIL'}  {row['name']}  " + ", ".join(f"{f['gate']}={f['measured']}" for f in failed),
-             "gate", asset=row["name"], ok=ok, failed=failed)
+        try:
+            build_one(con, pack, row, params, attempt, out_dir, recipe, known)
+        except Exception as e:      # one broken generator or gate fails its own asset, not the whole build
+            con.rollback()          # drop this attempt's half-written provenance
+            msg = f"{type(e).__name__}: {e}"[:300]
+            con.execute("INSERT INTO gate_results (asset_id, attempt, recipe, gate, passed, measured, expected) "
+                        "VALUES (?,?,?,?,0,?,?)", (row["asset_id"], attempt, recipe, "gate_error", msg, "no exception"))
+            con.execute("UPDATE assets SET status='failed', attempts=?, updated_at=datetime('now') WHERE asset_id=?",
+                        (attempt, row["asset_id"]))
+            con.commit()
+            emit(f"FAIL  {row['name']}  gate_error={msg}", "gate", asset=row["name"], ok=False,
+                 failed=[{"gate": "gate_error", "measured": msg, "expected": "no exception"}])
     pack_level_gates(con, pack, recipe)
+
+def build_one(con, pack, row, params, attempt, out_dir, recipe, known):
+    """Produce one asset, record its provenance, run its gates and store the verdict."""
+    out, prov = PRODUCERS[row["kind"]](row, params, attempt, out_dir)
+    if out is None:                                 # nothing new to check; attempt not used up
+        emit(f"WAIT  {row['name']}  ({prov})", "wait", asset=row["name"])
+        return
+    if prov["license_id"] not in known:            # a typo or a license nobody has reviewed: block it
+        prov["license_id"] = "unknown"
+    out_sha, run_id = sha256(out), uuid.uuid4().hex
+    con.execute("INSERT INTO provenance (asset_id, run_id, step, tool, tool_version, model, model_version, seed, "
+                "prompt_sha256, service_plan, license_id, ai_generated, cost_usd, external_ref, output_sha256) "
+                "VALUES (:a,:run,:step,:tool,:tool_version,:model,:model_version,:seed,:prompt_sha256,"
+                ":service_plan,:license_id,:ai_generated,:cost_usd,:external_ref,:sha)",
+                {"model": None, "model_version": None, "prompt_sha256": None, "service_plan": None,
+                 "cost_usd": 0, "external_ref": None, "tool_version": None, "seed": None,
+                 **prov, "a": row["asset_id"], "run": run_id, "sha": out_sha})
+    results, metrics = GATES[row["kind"]](out, pack, params)
+    con.executemany("INSERT INTO gate_results (asset_id, attempt, recipe, gate, passed, measured, expected) "
+                    "VALUES (?,?,?,?,?,?,?)", [(row["asset_id"], attempt, recipe, *res) for res in results])
+    ok = all(res[1] for res in results)
+    con.execute("UPDATE assets SET status=?, attempts=?, output_path=?, output_sha256=?, run_id=?, "
+                "params_json=?, updated_at=datetime('now') WHERE asset_id=?",
+                ("passed" if ok else "failed", attempt, str(out), out_sha, run_id,
+                 json.dumps({**params, "metrics": metrics}), row["asset_id"]))
+    con.commit()                        # commit per asset = resumable
+    failed = [{"gate": n, "measured": m, "expected": e} for n, p, m, e in results if not p]
+    emit(f"{'PASS' if ok else 'FAIL'}  {row['name']}  " + ", ".join(f"{f['gate']}={f['measured']}" for f in failed),
+         "gate", asset=row["name"], ok=ok, failed=failed)
 
 def pack_level_gates(con, pack, recipe):
     """Gates that only make sense across the whole pack (consistency, duplicates)."""
@@ -250,7 +288,14 @@ def pack_level_gates(con, pack, recipe):
                 con.execute("UPDATE assets SET status='failed' WHERE asset_id=? AND status='passed'", (a,))
     con.commit()
 
-def cmd_approve(con, pack, names=None):
+def cmd_approve(con, pack, spec_path, names=None):
+    # "passed" only means something under the current recipe: approving before a rebuild would freeze
+    # assets that were never checked against the new budgets, gates or licenses.
+    row = con.execute("SELECT spec_hash FROM packs WHERE pack_id=?", (pack["pack_id"],)).fetchone()
+    if not row or row["spec_hash"] != recipe_hash(spec_path):
+        reason = "spec, generators, gates or licenses changed since the last build: rebuild before approving"
+        emit(f"APPROVE REFUSED: {reason}", "refused", reason=reason)
+        return 1
     q = "UPDATE assets SET status='approved' WHERE pack_id=? AND status='passed'"
     args = [pack["pack_id"]]
     if names:
@@ -260,8 +305,9 @@ def cmd_approve(con, pack, names=None):
     n = con.execute(q, args).rowcount
     con.commit()
     emit(f"approved {n} asset(s)", "approved", count=n)
+    return 0
 
-def cmd_report(con, pack):
+def cmd_report(con, pack, write=True):
     pid = pack["pack_id"]
     assets = con.execute("SELECT * FROM assets WHERE pack_id=? AND status!='rejected' ORDER BY name", (pid,)).fetchall()
     blockers = con.execute("SELECT b.* FROM v_license_blockers b JOIN assets a USING (asset_id) "
@@ -286,6 +332,11 @@ def cmd_report(con, pack):
                           (pid, a["asset_id"], a["attempts"])).fetchall()
         lines.append(f"| {a['name']} | {a['status']} | {a['attempts']} | "
                      + ("; ".join(f"{b['gate']}: {b['measured']} (want {b['expected']})" for b in bad) or "—") + " |")
+    ok = 0 if not blockers and len(passed) == len(assets) else 1
+    if not write:                    # publish --dry-run: the same verdict, nothing written
+        emit(f"report: {len(passed)}/{len(assets)} passed, {len(blockers)} license blockers", "report",
+             passed=len(passed), total=len(assets), blockers=len(blockers))
+        return ok
     out = ROOT / "dist" / pid
     out.mkdir(parents=True, exist_ok=True)
     (out / "VERIFY.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -298,7 +349,7 @@ def cmd_report(con, pack):
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     emit(f"wrote {out / 'VERIFY.md'}  ({len(passed)}/{len(assets)} passed, {len(blockers)} license blockers)", "report",
          path=str(out / "VERIFY.md"), passed=len(passed), total=len(assets), blockers=len(blockers))
-    return 0 if not blockers and len(passed) == len(assets) else 1
+    return ok
 
 def godot_randomizers(stage_dir, pid):
     """Build AudioStreamRandomizer .tres files in the harness at res://addons/<pid>/, the same path the zip
@@ -422,6 +473,10 @@ def cmd_package(con, pack):
     assets = con.execute("SELECT * FROM assets WHERE pack_id=? AND status IN ('passed','approved') ORDER BY name", (pid,)).fetchall()
     for a in assets:
         src = pathlib.Path(a["output_path"])
+        if not src.exists() or sha256(src) != a["output_sha256"]:   # the file changed after its gates ran
+            reason = f"{a['name']}: {src.name} changed or vanished since it was gated: rebuild it"
+            emit(f"PACKAGE REFUSED: {reason}", "refused", reason=reason)
+            return 1
         dst = stage_dir / ("shaders" if a["kind"] == "shader" else "") / src.name
         dst.parent.mkdir(exist_ok=True)
         shutil.copy2(src, dst)
@@ -543,6 +598,13 @@ def cmd_listing(con, pack):
             files = zf.namelist()
     ver = pack.get("engine_target", "").removeprefix("godot-")
     price = pack.get("price_usd")
+    if price is not None:
+        try:
+            price = float(price)                      # YAML reads a quoted "4.99" as text
+        except (TypeError, ValueError):
+            emit(f"LISTING REFUSED: price_usd must be a number, got {price!r}", "refused",
+                 reason=f"price_usd must be a number, got {price!r}")
+            return 1
     disc = pack.get("disclosure", {})
     lines = [f"# {pack.get('title', pid)}", "",
              pack.get("description", f"{pack['category'].capitalize()} pack for Godot {ver}."), "",
@@ -564,14 +626,15 @@ def dir_sha256(d):
         h.update(f.relative_to(d).as_posix().encode() + b"\0" + f.read_bytes())
     return h.hexdigest()
 
-def cmd_publish(con, pack, spec_path, dry_run=False):
+def cmd_publish(con, pack, spec_path, dry_run=False, expect=None):
     """Uploads the addon zip (and web_demo if present) to itch.io with butler. Refuses unless the pack is
     shippable: report exits 0, every live asset is approved, the zip exists, and nothing changed since the build."""
     pid = pack["pack_id"]
     g = global_spec()
     user = (g.get("itch") or {}).get("user")
     butler = g.get("tools", {}).get("butler")
-    con.executescript((ROOT / "pipeline" / "schema.sql").read_text(encoding="utf-8"))   # adds releases to old DBs
+    if not dry_run:                                   # a dry run writes nothing, not even the schema
+        con.executescript((ROOT / "pipeline" / "schema.sql").read_text(encoding="utf-8"))   # adds releases to old DBs
     dist = ROOT / "dist" / pid
     zip_path = dist / f"{pid}.zip"
     row = con.execute("SELECT spec_hash FROM packs WHERE pack_id=?", (pid,)).fetchone()
@@ -580,18 +643,21 @@ def cmd_publish(con, pack, spec_path, dry_run=False):
         return 1
     if not user:
         return refuse("itch.user is not set (put it in spec/global.local.yaml)")
-    if not butler or not pathlib.Path(butler).exists():
-        return refuse(f"butler not found at {butler!r} (set tools.butler in spec/global.local.yaml)")
+    butler = butler and (butler if pathlib.Path(butler).exists() else shutil.which(butler))   # a bare name: PATH
+    if not butler:
+        return refuse(f"butler not found at {g.get('tools', {}).get('butler')!r} (set tools.butler in spec/global.local.yaml)")
     if not row:
         return refuse("pack was never built")
     if recipe_hash(spec_path) != row["spec_hash"]:
         return refuse("spec, generators or gates changed since the last build: rebuild first")
-    if cmd_report(con, pack) != 0:
+    if cmd_report(con, pack, write=not dry_run) != 0:
         return refuse("report has failing assets or license blockers")
     pending = [r["name"] for r in con.execute("SELECT name FROM assets WHERE pack_id=? AND status NOT IN "
                                               "('approved','rejected') ORDER BY name", (pid,))]
     if pending:
         return refuse(f"not approved: {', '.join(pending)}")
+    if not con.execute("SELECT 1 FROM assets WHERE pack_id=? AND status='approved'", (pid,)).fetchone():
+        return refuse("no approved assets: nothing to publish")
     if not zip_path.exists():
         return refuse(f"addon zip missing: {zip_path} (run package)")
     approved = {r["name"]: r["output_sha256"] for r in con.execute(
@@ -606,6 +672,9 @@ def cmd_publish(con, pack, spec_path, dry_run=False):
     pushes = [("godot-addon", zip_path, sha256(zip_path))]
     if (dist / "web_demo").is_dir():
         pushes.append(("html5", dist / "web_demo", dir_sha256(dist / "web_demo")))
+    # --expect: the channel:sha256 pairs the user saw in the dry run and confirmed. Anything else was not confirmed.
+    if expect is not None and sorted(f"{c}:{h}" for c, _, h in pushes) != sorted(expect):
+        return refuse("files changed since the preview: open Publish again to see what would be uploaded")
     for channel, path, file_sha in pushes:
         target = f"{user}/{pid}:{channel}"
         cmd = [str(butler), "push", str(path), target]
@@ -613,7 +682,12 @@ def cmd_publish(con, pack, spec_path, dry_run=False):
              channel=channel, target=target, cmd=cmd, dry_run=dry_run, sha256=file_sha)
         if dry_run:
             continue
-        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)   # no login prompt hang
+        try:                                          # no stdin: a login prompt fails instead of hanging
+            p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3600)
+        except subprocess.TimeoutExpired:
+            emit(f"butler push timed out after 1 h for {target}", "error", message="butler did not finish within an hour",
+                 channel=channel)
+            return 1
         if p.returncode != 0:
             tail = "\n".join((p.stdout + p.stderr).splitlines()[-40:])
             print(tail, file=sys.stderr)
@@ -688,14 +762,24 @@ def run(a):
         return cmd_playground(connect(), a.open)
     spec_path = ROOT / a.pack
     pack = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+    pid = pack.get("pack_id") if isinstance(pack, dict) else None
+    # The file name is what the Studio locks on and what the publish confirmation names. A pack_id that differs
+    # (a copied spec) would rewrite another pack's approvals or upload under the other name; an odd one is a path.
+    if not (isinstance(pid, str) and re.fullmatch(r"[a-z][a-z0-9_]*", pid) and pid == spec_path.stem):
+        reason = f"pack_id {pid!r} must be a lowercase id equal to the spec file name {spec_path.stem!r}"
+        emit(f"REFUSED: {reason}", "refused", reason=reason)
+        return 1
+    if a.cmd == "publish" and a.dry_run and not DB.exists():   # a preview never creates the database
+        emit("PUBLISH REFUSED: pack was never built", "refused", reason="pack was never built")
+        return 1
     con = connect()
     if a.cmd == "init":    cmd_init(con, pack)
     if a.cmd == "build":   cmd_build(con, pack, spec_path)
-    if a.cmd == "approve": cmd_approve(con, pack, a.only)
+    if a.cmd == "approve": return cmd_approve(con, pack, spec_path, a.only)
     if a.cmd == "report":  return cmd_report(con, pack)
     if a.cmd == "package": return cmd_package(con, pack)
     if a.cmd == "listing": return cmd_listing(con, pack)
-    if a.cmd == "publish": return cmd_publish(con, pack, spec_path, a.dry_run)
+    if a.cmd == "publish": return cmd_publish(con, pack, spec_path, a.dry_run, a.expect)
     return 0
 
 def main():
@@ -709,6 +793,7 @@ def main():
     ap.add_argument("--only", nargs="*", help="approve: just these asset names")
     ap.add_argument("--dry-run", action="store_true", help="publish: print the butler commands, push nothing")
     ap.add_argument("--open", action="store_true", help="playground: launch Godot on it after a clean load")
+    ap.add_argument("--expect", nargs="*", help="publish: the channel:sha256 pairs the dry run showed; refuse on any change")
     ap.add_argument("--json", action="store_true", help="one JSON event per stdout line")
     a = ap.parse_args()
     if a.cmd == "new" and not a.kind:
@@ -724,7 +809,10 @@ def main():
         if JSON:
             emit(str(e), "error", message=str(e))
     if JSON:
-        print(json.dumps({"event": "done", "cmd": a.cmd, "exit": code}), flush=True)
+        try:
+            print(json.dumps({"event": "done", "cmd": a.cmd, "exit": code}), flush=True)
+        except OSError:      # nobody left to tell (see emit)
+            pass
     return code
 
 if __name__ == "__main__":

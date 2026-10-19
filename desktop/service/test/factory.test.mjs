@@ -261,3 +261,86 @@ test('playground and pack jobs never overlap', async () => {
     assert.equal((await building).status, 200);
   } finally { f.close(); }
 });
+
+test('done is the last frame even when stderr arrives after it', async () => {
+  const f = await fixture({ STUB_MODE: 'lateerr' });
+  try {
+    const { events } = await job(f, 'listing');
+    assert.ok(events.some(event => event.event === 'stderr' && event.msg === 'late warning'));
+    assert.deepEqual(events.at(-1), { event: 'done', cmd: 'listing', exit: 0 });
+    assert.equal(events.filter(event => event.event === 'done').length, 1);
+  } finally { f.close(); }
+});
+
+test('cancel stops a stuck job and its whole process tree', async () => {
+  const f = await fixture({ STUB_MODE: 'hang' });
+  try {
+    assert.equal((await post(`${f.url}/factory/packs/ui_sfx_v1/cancel`)).status, 409);     // nothing running
+    const running = job(f, 'build');
+    let pid;
+    for (let i = 0; i < 50 && !pid; i++) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const logs = await readdir(path.join(f.factoryDir, 'build/ui_sfx_v1/jobs')).catch(() => []);
+      const text = logs.length ? await readFile(path.join(f.factoryDir, 'build/ui_sfx_v1/jobs', logs[0]), 'utf8') : '';
+      pid = Number(/grandchild (\d+)/.exec(text)?.[1]) || undefined;
+    }
+    assert.ok(pid, 'stub started its grandchild');
+    const cancelled = await post(`${f.url}/factory/packs/ui_sfx_v1/cancel`);
+    assert.equal(cancelled.status, 200);
+    const { events } = await running;
+    assert.ok(events.some(event => event.event === 'cancelled'));
+    assert.equal(events.at(-1).event, 'done');
+    assert.notEqual(events.at(-1).exit, 0);
+    let alive = true;
+    for (let i = 0; i < 30 && alive; i++) {
+      try { process.kill(pid, 0); await new Promise(resolve => setTimeout(resolve, 100)); } catch { alive = false; }
+    }
+    assert.equal(alive, false, 'grandchild killed with the job');
+    process.env.STUB_MODE = 'ok';
+    assert.equal((await job(f, 'build')).status, 200);                                     // lock released
+  } finally { f.close(); }
+});
+
+test('building a mesh pack also needs Blender', async () => {
+  const f = await fixture();
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(path.join(f.factoryDir, 'factory.db'));
+    db.exec("UPDATE packs SET category = 'mesh' WHERE pack_id = 'ui_sfx_v1'");
+    db.close();
+    const result = await job(f, 'build');                                   // fixture config has no blender
+    assert.equal(result.status, 424);
+    assert.equal(result.body.tool, 'blender');
+    process.env.STUB_CONFIG = JSON.stringify({ ...JSON.parse(process.env.STUB_CONFIG), tools: { ...JSON.parse(process.env.STUB_CONFIG).tools, blender: path.join(f.root, 'godot.exe') } });
+    assert.equal((await job(f, 'build')).status, 200);
+    assert.equal((await job(f, 'listing')).status, 200);                    // only build runs Blender
+  } finally { f.close(); }
+});
+
+test('cancel while a job is still preparing stops it before it spawns', async () => {
+  const f = await fixture({ STUB_MODE: 'slowconfig' });
+  try {
+    const starting = job(f, 'build');
+    await new Promise(resolve => setTimeout(resolve, 300));                 // reading the config
+    assert.equal((await post(`${f.url}/factory/packs/ui_sfx_v1/cancel`)).status, 200);
+    const result = await starting;
+    assert.equal(result.status, 409);
+    assert.match(result.body.error, /Cancelled before it started/);
+    assert.deepEqual(await f.calls(), []);                                    // never spawned
+    process.env.STUB_MODE = 'ok';
+    assert.equal((await job(f, 'build')).status, 200);
+  } finally { f.close(); }
+});
+
+test('publish forwards the previewed hashes as --expect', async () => {
+  const f = await fixture();
+  try {
+    const pair = `godot-addon:${'a'.repeat(64)}`;
+    assert.equal((await job(f, 'publish', { confirm: 'me/ui_sfx_v1', expect: [pair] })).status, 200);
+    assert.deepEqual((await f.calls()).at(-1), ['publish', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json', '--expect', pair]);
+    for (const expect of ['x', ['--evil'], [`godot-addon:${'z'.repeat(64)}`]])
+      assert.equal((await job(f, 'publish', { confirm: 'me/ui_sfx_v1', expect })).status, 400, JSON.stringify(expect));
+    assert.equal((await job(f, 'publish', { dryRun: true, expect: [pair] })).status, 400);
+    assert.equal((await job(f, 'build', { expect: [pair] })).status, 400);
+  } finally { f.close(); }
+});

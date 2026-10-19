@@ -98,6 +98,15 @@ try {
   await page.getByRole('log', { name: 'approve log' }).getByText('done (exit 0)').waitFor();
   assert.deepEqual((await stubCalls()).at(-1), ['approve', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json', '--only', 'tap']);
 
+  // A stuck job can be cancelled from its log; the pack unlocks.
+  process.env.STUB_MODE = 'hang';
+  await page.getByRole('button', { name: 'Build' }).click();
+  await page.getByRole('log', { name: 'build log' }).getByText(/^grandchild \d+$/).waitFor();
+  await page.getByRole('button', { name: 'Cancel build' }).click();
+  await page.getByRole('log', { name: 'build log' }).getByText('cancelled by the user').waitFor();
+  await page.getByRole('log', { name: 'build log' }).locator('.job-failed').waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Build' }).isDisabled(), false);
+
   process.env.STUB_MODE = 'argparse';
   await page.getByRole('button', { name: 'Package' }).click();
   await log.locator('.job-failed', { hasText: 'failed (exit 2)' }).waitFor();
@@ -130,6 +139,8 @@ try {
   await page.getByRole('log', { name: 'publish log' }).getByText('pushed me/ui_sfx_v1:html5').waitFor();
   const publishes = (await stubCalls()).filter(call => call[0] === 'publish');
   assert.deepEqual(publishes.map(call => call.includes('--dry-run')), [true, false]);
+  // The real publish carries exactly what the preview showed, so the CLI can refuse changed files.
+  assert.deepEqual(publishes[1].slice(publishes[1].indexOf('--expect') + 1), [`godot-addon:${'a'.repeat(64)}`, `html5:${'b'.repeat(64)}`]);
 
   process.env.STUB_MODE = 'refused';
   await page.getByRole('button', { name: 'Publish…' }).click();
@@ -150,7 +161,7 @@ try {
   assert.equal(calls.filter(call => call[0] === 'publish' && !call.includes('--dry-run')).length, 2);   // both stubbed, both typed-confirmed
 
   assert.deepEqual(errors, []);
-  console.log('Studio UI passed: pack list, playground, pack page, ask agent, job log, approve confirm, failures, missing tool, publish dialog, refusal, butler login.');
+  console.log('Studio UI passed: pack list, playground, pack page, ask agent, job log, cancel, approve confirm, failures, missing tool, publish dialog, refusal, butler login.');
 } finally {
   await browser?.close();
   await service.close();
