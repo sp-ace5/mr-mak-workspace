@@ -28,6 +28,7 @@ export const onServiceEvent = (listener: (event: ServiceEvent) => void) => { eve
 export const setPreview = (preview: Preview | null) => update({ preview })
 export const dismissError = () => update({ error: null })
 export const reportError = (error: unknown) => update({ error: error instanceof Error ? error.message : String(error) })
+export const authHeader = () => ({ Authorization: `Bearer ${token}` })
 export const contentUrl = (relative: string) => isDesktop ? `${state.contentBase}${relative}` : relative
 
 export async function api<T>(path: string, data?: unknown, method?: string, options: { keepalive?: boolean } = {}): Promise<T> {

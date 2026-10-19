@@ -12,6 +12,7 @@ import { contentUrl, isDesktop } from './desktop/client'
 
 const Compare3D = lazy(() => import('./components/Compare3D'))
 const ReportViewer = lazy(() => import('./components/ReportViewer'))
+const Studio = lazy(() => import('./studio/Studio'))
 
 // Freshly-touched work always burns at the top: sort by `updated` (falls back
 // to `created`), regardless of status — a report Mak just edited must not sink
@@ -165,7 +166,9 @@ export default function App() {
 
         <div className="content">
           <ReportBoundary key={reportUrl || 'home'} onHome={goHome}>
-          {entity && reportUrl && step?.viewer === 'compare3d' ? (
+          {isDesktop && route.id === '@studio' ? (
+            <Suspense fallback={<div className="boot"><MakLogo size={56} animated={false} /></div>}><Studio /></Suspense>
+          ) : entity && reportUrl && step?.viewer === 'compare3d' ? (
             <Suspense fallback={<div className="boot"><MakLogo size={56} animated={false} /></div>}><Compare3D
               key={reportUrl}
               manifestUrl={reportUrl}
