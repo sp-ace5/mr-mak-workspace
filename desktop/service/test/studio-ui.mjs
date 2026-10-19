@@ -77,12 +77,46 @@ try {
   await card.waitFor();
   assert.ok((await card.textContent()).includes(missing));
 
+  // Publish: dry-run preview, exact typed confirm, then the real (stubbed) push.
+  process.env.STUB_CONFIG = env.STUB_CONFIG;
+  await page.getByRole('table', { name: 'Releases' }).getByText('me/ui_sfx_v1').waitFor();
+  await page.getByRole('button', { name: 'Publish…' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Publish ui_sfx_v1' });
+  await dialog.getByText('me/ui_sfx_v1:html5').waitFor();
+  for (const text of ['godot-addon', 'me/ui_sfx_v1:godot-addon', 'a'.repeat(12)]) assert.ok((await dialog.textContent()).includes(text), text);
+  const publish = dialog.getByRole('button', { name: 'Publish', exact: true });
+  const confirm = dialog.getByRole('textbox', { name: /Type me\/ui_sfx_v1/ });
+  assert.equal(await publish.isDisabled(), true);
+  await confirm.fill('me/ui_sfx_v1 ');
+  assert.equal(await publish.isDisabled(), true);
+  await confirm.fill('me/ui_sfx_v1');
+  await publish.click();
+  await dialog.waitFor({ state: 'hidden' });
+  await page.getByRole('log', { name: 'publish log' }).getByText('done (exit 0)').waitFor();
+  await page.getByRole('log', { name: 'publish log' }).getByText('pushed me/ui_sfx_v1:html5').waitFor();
+  const publishes = (await stubCalls()).filter(call => call[0] === 'publish');
+  assert.deepEqual(publishes.map(call => call.includes('--dry-run')), [true, false]);
+
+  process.env.STUB_MODE = 'refused';
+  await page.getByRole('button', { name: 'Publish…' }).click();
+  await dialog.getByText('not approved: hover').waitFor();
+  assert.equal(await dialog.getByRole('textbox').count(), 0);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await dialog.waitFor({ state: 'hidden' });
+
+  process.env.STUB_MODE = 'nologin';
+  await page.getByRole('button', { name: 'Publish…' }).click();
+  await confirm.fill('me/ui_sfx_v1');
+  await publish.click();
+  await page.getByRole('alert').filter({ hasText: 'butler login' }).waitFor();
+  process.env.STUB_MODE = 'ok';
+
   const calls = await stubCalls();
   assert.deepEqual(calls[0], ['build', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json']);
-  assert.ok(calls.every(call => call[0] !== 'publish'));
+  assert.equal(calls.filter(call => call[0] === 'publish' && !call.includes('--dry-run')).length, 2);   // both stubbed, both typed-confirmed
 
   assert.deepEqual(errors, []);
-  console.log('Studio UI passed: pack list, pack page, job log, approve confirm, failures, missing tool.');
+  console.log('Studio UI passed: pack list, pack page, job log, approve confirm, failures, missing tool, publish dialog, refusal, butler login.');
 } finally {
   await browser?.close();
   await service.close();

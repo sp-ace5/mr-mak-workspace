@@ -12,6 +12,21 @@ appendFileSync(process.env.STUB_LOG, JSON.stringify([cmd, ...rest]) + '\n');
 if (mode === 'argparse') { process.stderr.write('usage: run.py [-h] {new,...}\n'); process.exit(2); }
 if (mode === 'nodone') { out({ event: 'log', msg: 'hi' }); process.exit(0); }
 if (mode === 'donefail') { out({ event: 'done', cmd, exit: 0 }); process.exit(3); }
+if (cmd === 'publish') {
+  const pack = rest[rest.indexOf('--pack') + 1].replace(/^spec\/packs\/|\.yaml$/g, '');
+  const user = JSON.parse(process.env.STUB_CONFIG).itch.user;
+  if (mode === 'refused') { out({ event: 'refused', msg: 'PUBLISH REFUSED: not approved: hover', reason: 'not approved: hover' }); out({ event: 'done', cmd, exit: 1 }); process.exit(1); }
+  const dry = rest.includes('--dry-run');
+  for (const channel of ['godot-addon', 'html5']) {
+    const target = `${user}/${pack}:${channel}`;
+    out({ event: 'push', msg: `${dry ? 'DRY RUN  ' : ''}butler push x ${target}`, channel, target, dry_run: dry, sha256: (channel === 'html5' ? 'b' : 'a').repeat(64) });
+    if (dry) continue;
+    if (mode === 'nologin') { out({ event: 'error', msg: `butler push failed (1) for ${target}`, message: 'Please run butler login first', channel }); out({ event: 'done', cmd, exit: 1 }); process.exit(1); }
+    out({ event: 'pushed', msg: `pushed ${target}`, channel, target });
+  }
+  out({ event: 'done', cmd, exit: 0 });
+  process.exit(0);
+}
 if (mode === 'slow') await new Promise(resolve => setTimeout(resolve, 800));
 out({ event: 'log', msg: 'hi' });
 out('not json');

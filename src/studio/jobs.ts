@@ -30,3 +30,20 @@ export function startJob(pack: string, cmd: JobCommand, body: object = {}): Prom
 
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }
 export const useJob = (pack: string) => useSyncExternalStore(subscribe, () => jobs.get(pack) ?? null)
+
+export interface DryRun { pushes: JobEvent[]; refusal: string | null; error: string | null }
+
+// `publish --dry-run` pushes nothing: it lists the exact targets and file hashes,
+// or the reason the CLI would refuse. Started from the click, not an effect, so
+// it runs once.
+export function dryRun(id: string): Promise<DryRun> {
+  const pushes: JobEvent[] = []
+  let refusal: string | null = null
+  return runJob(id, 'publish', { dryRun: true }, event => {
+    if (event.event === 'push') pushes.push(event)
+    if (event.event === 'refused') refusal = String(event.reason ?? event.msg ?? 'refused')
+  }).then(
+    done => ({ pushes, refusal, error: done.exit === 0 || refusal ? null : `Dry run failed (exit ${done.exit ?? '?'})` }),
+    error => ({ pushes: [], refusal: null, error: error instanceof Error ? error.message : String(error) }),
+  )
+}
