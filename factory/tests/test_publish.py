@@ -17,6 +17,7 @@ def butler(fac, tmp_path):
     stub = tmp_path / "stub.py"
     stub.write_text("import json, os, sys\n"
                     f"open({str(calls)!r}, 'a').write(json.dumps(sys.argv[1:]) + chr(10))\n"
+                    "os.environ.get('STUB_READ') and sys.stdin.read()\n"
                     "sys.exit(int(os.environ.get('STUB_EXIT', '0')))\n", encoding="utf-8")
     if os.name == "nt":
         exe = tmp_path / "butler.cmd"
@@ -42,11 +43,18 @@ def releases(fac):
         return []
 
 
-def fake_zip(fac):
+def fake_zip(fac, manifest=True, tamper=False):
+    """Stands in for `package` (needs Godot): a zip whose manifest lists the DB's current approved outputs."""
     z = fac / "dist" / "t_sfx" / "t_sfx.zip"
     z.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(fac / "t.db")
+    rows = con.execute("SELECT name, output_sha256 FROM assets WHERE pack_id='t_sfx' AND status='approved'").fetchall()
+    con.close()
+    entries = [{"name": n, "sha256": ("0" * 64 if tamper and i == 0 else h)} for i, (n, h) in enumerate(rows)]
     with zipfile.ZipFile(z, "w") as zf:
         zf.writestr("addons/t_sfx/a.wav", b"x")
+        if manifest:
+            zf.writestr("addons/t_sfx/manifest.json", json.dumps(entries))
     return z
 
 
@@ -160,3 +168,52 @@ def test_publish_butler_failure(fac, butler):
     assert len(calls_made(butler[1])) == 1
     assert releases(fac) == []
     assert events(r)[-1] == {"event": "done", "cmd": "publish", "exit": 1}
+
+
+def test_refuses_stale_zip(fac, butler):
+    pack = built_sfx(fac)
+    fake_zip(fac, tamper=True)          # e.g. packaged before a rebuild: old output hashes
+    assert_refused(publish(fac, pack), fac, butler[1], "package")
+
+
+def test_refuses_zip_without_manifest(fac, butler):
+    pack = built_sfx(fac)
+    fake_zip(fac, manifest=False)
+    assert_refused(publish(fac, pack), fac, butler[1], "package")
+
+
+def test_temp_copy_never_sees_real_butler(fac, tmp_path):
+    from conftest import py
+    out = py(fac, "from pipeline.run import global_spec; print(global_spec()['tools']['butler'])").strip()
+    assert out.startswith(str(tmp_path))
+
+
+def test_butler_gets_no_stdin(fac, butler):
+    """An unauthenticated butler waits for an interactive login; the CLI must not hang on it."""
+    import subprocess
+    pack = built_sfx(fac)
+    fake_zip(fac)
+    p = subprocess.Popen([sys.executable, str(fac / "pipeline" / "run.py"), "publish", *pack],
+                         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         env={**os.environ, "FACTORY_DB": str(fac / "t.db"), "STUB_READ": "1"})
+    try:
+        assert p.wait(timeout=60) == 0
+    finally:
+        p.kill()
+        p.stdin.close()
+
+
+def test_package_clears_stale_web_demo(fac):
+    """A package run that skips the web export (no templates) must not leave an old demo for publish to push."""
+    from conftest import py
+    pack = built_sfx(fac)
+    old = fac / "dist" / "t_sfx" / "web_demo"
+    old.mkdir(parents=True)
+    (old / "index.html").write_text("old", encoding="utf-8")
+    (fac / "dist" / "t_sfx" / "t_sfx_web.zip").write_bytes(b"old")
+    py(fac, "import yaml, pipeline.run as r; r.godot_randomizers = lambda *a: None; "
+            "pack = yaml.safe_load(open(r.ROOT / 'spec/packs/t_sfx.yaml', encoding='utf-8')); "
+            "assert r.cmd_package(r.connect(), pack) == 0")
+    assert (fac / "dist" / "t_sfx" / "t_sfx.zip").exists()
+    assert not old.exists()
+    assert not (fac / "dist" / "t_sfx" / "t_sfx_web.zip").exists()

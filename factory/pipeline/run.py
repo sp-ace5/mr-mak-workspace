@@ -416,6 +416,8 @@ def cmd_package(con, pack):
     stage_dir = dist_dir / "addons" / pid
     if stage_dir.exists():
         shutil.rmtree(stage_dir)
+    shutil.rmtree(dist_dir / "web_demo", ignore_errors=True)    # only this run's export may be published
+    (dist_dir / f"{pid}_web.zip").unlink(missing_ok=True)
     stage_dir.mkdir(parents=True, exist_ok=True)
     assets = con.execute("SELECT * FROM assets WHERE pack_id=? AND status IN ('passed','approved') ORDER BY name", (pid,)).fetchall()
     for a in assets:
@@ -592,6 +594,15 @@ def cmd_publish(con, pack, spec_path, dry_run=False):
         return refuse(f"not approved: {', '.join(pending)}")
     if not zip_path.exists():
         return refuse(f"addon zip missing: {zip_path} (run package)")
+    approved = {r["name"]: r["output_sha256"] for r in con.execute(
+        "SELECT name, output_sha256 FROM assets WHERE pack_id=? AND status='approved'", (pid,))}
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            shipped = {m["name"]: m["sha256"] for m in json.loads(zf.read(f"addons/{pid}/manifest.json"))}
+    except (KeyError, ValueError, zipfile.BadZipFile):
+        shipped = None
+    if shipped != approved:                           # zip built from older outputs, or not by package
+        return refuse("zip does not match the approved assets: run package again")
     pushes = [("godot-addon", zip_path, sha256(zip_path))]
     if (dist / "web_demo").is_dir():
         pushes.append(("html5", dist / "web_demo", dir_sha256(dist / "web_demo")))
@@ -602,7 +613,7 @@ def cmd_publish(con, pack, spec_path, dry_run=False):
              channel=channel, target=target, cmd=cmd, dry_run=dry_run)
         if dry_run:
             continue
-        p = subprocess.run(cmd, capture_output=True, text=True)
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)   # no login prompt hang
         if p.returncode != 0:
             tail = "\n".join((p.stdout + p.stderr).splitlines()[-40:])
             print(tail, file=sys.stderr)

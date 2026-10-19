@@ -32,8 +32,8 @@ Run from the repository root. `--pack` is resolved relative to `factory/`.
 - `listing`: write `factory/dist/<pack>/listing.md`, a draft for the itch.io page
   (title, description, VERIFY summary, AI-disclosure tags, file list, suggested price).
 - `publish [--dry-run]`: user only (see Hard rules). Refuses unless the pack is
-  built from the current spec, report passes, every asset is approved and the zip
-  exists; `--dry-run` prints the butler commands.
+  built from the current spec, report passes, every asset is approved and the zip's
+  manifest matches the approved outputs; `--dry-run` prints the butler commands.
 
 Add `--json` to any command for one JSON event per stdout line, ending with
 `{"event":"done","cmd":...,"exit":N}`. Prefer it when you parse the output.
