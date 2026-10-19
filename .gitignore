@@ -45,6 +45,8 @@ Thumbs.db
 # Asset factory: generated state (sources are committed)
 factory/factory.db
 factory/build/
+factory/inbox/*
+!factory/inbox/.gitkeep
 factory/wiki/
 factory/godot_harness/.godot/
 factory/godot_harness/addons/
