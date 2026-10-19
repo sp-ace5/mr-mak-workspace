@@ -271,3 +271,32 @@ test('done is the last frame even when stderr arrives after it', async () => {
     assert.equal(events.filter(event => event.event === 'done').length, 1);
   } finally { f.close(); }
 });
+
+test('cancel stops a stuck job and its whole process tree', async () => {
+  const f = await fixture({ STUB_MODE: 'hang' });
+  try {
+    assert.equal((await post(`${f.url}/factory/packs/ui_sfx_v1/cancel`)).status, 409);     // nothing running
+    const running = job(f, 'build');
+    let pid;
+    for (let i = 0; i < 50 && !pid; i++) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const logs = await readdir(path.join(f.factoryDir, 'build/ui_sfx_v1/jobs')).catch(() => []);
+      const text = logs.length ? await readFile(path.join(f.factoryDir, 'build/ui_sfx_v1/jobs', logs[0]), 'utf8') : '';
+      pid = Number(/grandchild (\d+)/.exec(text)?.[1]) || undefined;
+    }
+    assert.ok(pid, 'stub started its grandchild');
+    const cancelled = await post(`${f.url}/factory/packs/ui_sfx_v1/cancel`);
+    assert.equal(cancelled.status, 200);
+    const { events } = await running;
+    assert.ok(events.some(event => event.event === 'cancelled'));
+    assert.equal(events.at(-1).event, 'done');
+    assert.notEqual(events.at(-1).exit, 0);
+    let alive = true;
+    for (let i = 0; i < 30 && alive; i++) {
+      try { process.kill(pid, 0); await new Promise(resolve => setTimeout(resolve, 100)); } catch { alive = false; }
+    }
+    assert.equal(alive, false, 'grandchild killed with the job');
+    process.env.STUB_MODE = 'ok';
+    assert.equal((await job(f, 'build')).status, 200);                                     // lock released
+  } finally { f.close(); }
+});

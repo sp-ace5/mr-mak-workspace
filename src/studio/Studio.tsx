@@ -34,7 +34,7 @@ function Playground() {
       <button type="button" disabled={!!job?.running} onClick={() => void startJob(PLAYGROUND, 'playground', { open: true })}>Open in playground</button>
       <span className="studio-muted">Walk around every approved, packaged pack in Godot.</span>
     </div>
-    <JobLog job={job} />
+    <JobLog pack={PLAYGROUND} job={job} />
   </>
 }
 

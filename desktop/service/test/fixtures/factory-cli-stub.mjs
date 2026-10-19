@@ -13,6 +13,12 @@ if (mode === 'argparse') { process.stderr.write('usage: run.py [-h] {new,...}\n'
 if (mode === 'nodone') { out({ event: 'log', msg: 'hi' }); process.exit(0); }
 if (mode === 'donefail') { out({ event: 'done', cmd, exit: 0 }); process.exit(3); }
 if (mode === 'lateerr') { out({ event: 'done', cmd, exit: 0 }); await new Promise(resolve => setTimeout(resolve, 150)); process.stderr.write('late warning\n'); process.exit(0); }
+if (mode === 'hang') {   // a stuck CLI with a child of its own, like run-python.mjs -> python
+  const { spawn } = await import('node:child_process');
+  const kid = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+  out({ event: 'log', msg: `grandchild ${kid.pid}` });
+  await new Promise(resolve => setTimeout(resolve, 60000));
+}
 if (cmd === 'playground') {
   if (mode === 'slowplay') await new Promise(resolve => setTimeout(resolve, 800));
   out({ event: 'playground', msg: 'playground: 1 approved, packaged pack(s)', packs: ['ui_sfx_v1'] });

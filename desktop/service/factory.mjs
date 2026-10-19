@@ -138,7 +138,8 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
       const logDir = path.join(factoryDir, 'build', playground ? '_playground' : id, 'jobs');
       job.log = await mkdir(logDir, { recursive: true }).then(() => createWriteStream(path.join(logDir, `${stamp}-${cmd}${dryRun ? '-dry-run' : ''}.log`), { flags: 'a' }), error => error);
-      job.child = spawn(runner[0], [...runner[1], ...args], { cwd: repo, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      // POSIX: its own process group, so cancel can stop run-python.mjs and the Python under it together.
+      job.child = spawn(runner[0], [...runner[1], ...args], { cwd: repo, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) { jobs.delete(key); job.log?.end?.(); throw error; }
 
     try {
@@ -169,11 +170,22 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       });
       await outputs;
       // No done line (argparse error, Ctrl-C, crash) or an exit that contradicts it means failure.
+      if (job.cancelled) send({ event: 'cancelled', msg: 'cancelled by the user' });
       // done is always the last frame: the CLI's own when it matches the exit code, else a synthetic failure.
       send(typeof done?.exit === 'number' && done.exit === code ? done : { event: 'done', cmd, exit: code || 1, synthetic: true });
       await new Promise(resolve => job.log ? job.log.end(resolve) : resolve());   // log complete before the client sees the end
       response.end();
     } finally { jobs.delete(key); job.log?.end(); }
+  }
+
+  // Stops a job and everything it started. The job's stream then ends with "cancelled" and a failed done.
+  function cancel(key) {
+    const job = jobs.get(key);
+    if (!job?.child) throw fail(409, 'Nothing is running to cancel');
+    job.cancelled = true;
+    if (process.platform === 'win32') spawn('taskkill', ['/PID', String(job.child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    else try { process.kill(-job.child.pid, 'SIGTERM'); } catch { job.child.kill('SIGTERM'); }
+    return { cancelled: true };
   }
 
   async function handle(request, response, url) {
@@ -188,6 +200,11 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       }
       if (['GET', 'HEAD'].includes(method) && url.pathname === '/factory/file') return await file(request, response, url.searchParams.get('path')), true;
       const action = /^\/factory\/packs\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+      if (method === 'POST' && action?.[2] === 'cancel') {
+        if (!PACK_ID.test(action[1])) throw fail(400, 'Invalid pack id');
+        return json(response, 200, cancel(action[1])), true;
+      }
+      if (method === 'POST' && url.pathname === '/factory/playground/cancel') return json(response, 200, cancel('@playground')), true;
       if (method === 'POST' && action) return await startJob(request, response, action[1], action[2]), true;
       if (method === 'POST' && url.pathname === '/factory/playground') return await startJob(request, response, null, 'playground'), true;
       throw fail(404, 'Endpoint not found');

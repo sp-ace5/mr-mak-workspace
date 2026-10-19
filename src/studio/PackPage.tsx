@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, setPreview, useDesktop } from '../desktop/client'
+import { api, reportError, setPreview, useDesktop } from '../desktop/client'
 import type { Preview } from '../desktop/types'
 import { MarkdownView } from '../components/MarkdownDocument'
-import { factory, FactoryError, factoryPath, type Asset, type JobCommand, type JobEvent, type PackDetail, type Release } from './api'
+import { cancelJob, factory, FactoryError, factoryPath, type Asset, type JobCommand, type JobEvent, type PackDetail, type Release } from './api'
 import PublishDialog from './PublishDialog'
 import { dryRun, startJob, useJob, type DryRun, type Job } from './jobs'
 import { loadPreview, usePoll, usePreview } from './poll'
@@ -69,7 +69,13 @@ function JobError({ error }: { error: Error }) {
 }
 
 // Last 500 events of this pack's latest job, newest at the bottom.
-export function JobLog({ job }: { job: Job | null }) {
+// Stopping approve or publish halfway can leave a partial result (one channel uploaded), so those ask first.
+function stop(pack: string, cmd: string) {
+  if (['approve', 'publish'].includes(cmd) && !window.confirm(`Stop ${cmd} for ${pack} midway? Part of it may already be done.`)) return
+  void cancelJob(pack).catch(reportError)
+}
+
+export function JobLog({ pack, job }: { pack: string; job: Job | null }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => { if (ref.current) ref.current.scrollTop = ref.current.scrollHeight }, [job?.events, job?.result])
   if (!job) return null
@@ -81,7 +87,7 @@ export function JobLog({ job }: { job: Job | null }) {
     {login && <div className="studio-setup" role="alert"><b>Setup needed: butler login</b><p>Run <code>butler login</code> in a terminal once, then publish again.</p></div>}
     <div className="studio-log" role="log" aria-label={`${job.cmd} log`} ref={ref}>
       {events.map((event, index) => <div key={index} className={event.event === 'done' ? (event.exit === 0 ? 'job-done' : 'job-failed') : event.event === 'stderr' ? 'job-stderr' : undefined}>{line(event)}</div>)}
-      {job.running && <div className="studio-muted">{job.cmd} running…</div>}
+      {job.running && <div className="studio-muted">{job.cmd} running… <button type="button" className="studio-ask" onClick={() => stop(pack, job.cmd)}>Cancel {job.cmd}</button></div>}
     </div>
   </>
 }
@@ -174,7 +180,7 @@ export default function PackPage({ id }: { id: string }) {
   return <>
     <Chips counts={counts} shipped={pack.releases.length > 0} />
     <Toolbar id={id} pack={pack} repo={repo} job={job} selected={selected} version={version} />
-    <JobLog job={job} />
+    <JobLog pack={id} job={job} />
     <p className="studio-muted" role="status">{asked}</p>
     <table className="studio-assets" aria-label="Assets">
       <thead><tr><th aria-label="Select" /><th>Asset</th><th>Kind</th><th>Status</th><th>Attempts</th><th>Failed gates</th><th>Preview</th></tr></thead>
