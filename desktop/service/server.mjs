@@ -385,6 +385,17 @@ export async function createService({ repo, uiDir, stateDir, token = secret(), n
           if (!['chats', 'workspace'].includes(data.window) || !['show', 'hide', 'minimize', 'pin'].includes(data.action)) throw new Error('Unknown window action');
           native({ type: 'window', action: data.action, window: data.window, value: !!data.value }); return json(response, 200, { requested: true });
         }
+        // The Studio's "Ask agent": text goes into a chat's composer as a draft. Never sent, never typed into the agent.
+        if (method === 'POST' && url.pathname === '/api/chats/draft') {
+          if (typeof data.text !== 'string' || !data.text.trim() || data.text.length > 8192) throw Object.assign(new Error('A draft is 1 to 8192 characters of text'), { status: 400 });
+          if (data.sessionId !== undefined && typeof data.sessionId !== 'string') throw Object.assign(new Error('sessionId must be a string'), { status: 400 });
+          const id = data.sessionId ?? selectedId;
+          if (!id) throw Object.assign(new Error('Open a chat first'), { status: 409 });
+          const { name } = sessions.get(id);
+          broadcast('chat-draft', { sessionId: id, text: data.text });   // before navigate: the draft is stored when the chat mounts
+          focus(id);
+          return json(response, 200, { sessionId: id, name });
+        }
         if (method === 'POST' && url.pathname === '/api/reveal') {
           const file = await realpath(path.resolve(data.path));
           native({ type: 'reveal', path: file }); return json(response, 200, { requested: true });

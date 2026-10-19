@@ -81,6 +81,23 @@ export function selectChat(id: string) {
 }
 export const windowAction = (window: 'workspace' | 'chats', action = 'show', value?: boolean) => api('/window', { window, action, value }).catch(reportError)
 
+export const chatDraftKey = (id: string) => `mrmak.chatDraft.${id}`
+export const appendDraftText = (old: string, text: string) => old.trimEnd() ? `${old.trimEnd()}\n\n${text}` : text
+// Text the Workspace window asked to put into a chat's composer (Studio "Ask agent"). An open
+// Conversation for that chat takes it into its own state; otherwise it waits in the stored draft.
+function addChatDraft(sessionId: string, text: string) {
+  const taken = !window.dispatchEvent(new CustomEvent('mrmak-chat-draft', { detail: { sessionId, text }, cancelable: true }))
+  if (taken) return
+  try {
+    let saved: { text?: unknown; paths?: unknown } = {}
+    try { saved = JSON.parse(localStorage.getItem(chatDraftKey(sessionId)) || '{}') } catch { /* unreadable draft: start a new one */ }
+    localStorage.setItem(chatDraftKey(sessionId), JSON.stringify({
+      text: appendDraftText(typeof saved.text === 'string' ? saved.text : '', text),
+      paths: Array.isArray(saved.paths) ? saved.paths : [],
+    }))
+  } catch (error) { reportError(error) }
+}
+
 export async function startDesktop() {
   if (started) return
   started = true
@@ -124,6 +141,7 @@ function connect() {
       }
     }
     if (event.type === 'workspace-changed') window.dispatchEvent(new Event('mrmak-workspace-changed'))
+    if (event.type === 'chat-draft' && surface === 'chats' && event.sessionId && typeof event.text === 'string') addChatDraft(event.sessionId, event.text)
     events.forEach(listener => listener(event))
   }
   socket.onclose = () => {
