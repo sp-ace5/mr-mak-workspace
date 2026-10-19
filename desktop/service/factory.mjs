@@ -16,7 +16,7 @@ const ASSET_NAME = /^[\w.][\w.-]*$/;
 const CONFIG = 'import json; from pipeline.run import global_spec; print(json.dumps(global_spec()))';
 const fail = (status, message, extra = {}) => Object.assign(new Error(message), { status, extra });
 
-export function createFactory({ factoryDir, repo, runner = [process.execPath, [path.join(repo, 'scripts', 'run-python.mjs')]], db = path.join(factoryDir, 'factory.db') }) {
+export function createFactory({ factoryDir, repo, runner = [process.execPath, [path.join(repo, 'scripts', 'run-python.mjs')]], db = process.env.FACTORY_DB || path.join(factoryDir, 'factory.db') }) {
   const jobs = new Map();   // pack id -> { cmd, child }: one job per pack
   // Opened per request and closed at once, so the CLI never waits on a handle we hold.
   function read(query) {
@@ -97,12 +97,13 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
     if (!(cmd in COMMANDS)) throw fail(404, 'Endpoint not found');
     const spec = `spec/packs/${id}.yaml`;
     if (!await access(path.join(factoryDir, spec)).then(() => true, () => false)) throw fail(404, 'Pack spec not found');
+    // Body first: a client that never finishes sending it must not hold the pack's lock.
+    const data = await body(request, 64 * 1024);
     if (jobs.has(id)) throw fail(409, `A ${jobs.get(id).cmd} job is already running for ${id}`);
-    // Reserve before any await so two quick requests cannot both start.
+    // Reserve before the next await so two quick requests cannot both start.
     const job = { cmd, child: null };
     jobs.set(id, job);
     try {
-      const data = await body(request, 64 * 1024);
       const args = [path.join(factoryDir, 'pipeline', 'run.py'), cmd, '--pack', spec, '--json'];
       if (cmd === 'approve') {
         if (!Array.isArray(data.names) || !data.names.length || !data.names.every(name => typeof name === 'string' && ASSET_NAME.test(name)))
@@ -120,30 +121,31 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       job.child = spawn(runner[0], [...runner[1], ...args], { cwd: repo, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) { jobs.delete(id); throw error; }
 
-    response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
-    // The job outlives a closed client: stopping approve or publish halfway is worse than finishing.
-    const send = event => { if (!response.writableEnded && !response.destroyed) response.write(`data: ${JSON.stringify(event)}\n\n`); };
-    let done = null;
-    const lines = (stream, wrap) => new Promise(resolve => createInterface({ input: stream }).on('line', wrap).on('close', resolve));
-    const outputs = Promise.all([
-      lines(job.child.stdout, line => {
-        let event;
-        try { event = JSON.parse(line); } catch { /* plain text */ }
-        if (!event || typeof event !== 'object' || Array.isArray(event) || typeof event.event !== 'string') event = { event: 'log', msg: line };
-        if (event.event === 'done') done = event;
-        send(event);
-      }),
-      lines(job.child.stderr, line => send({ event: 'stderr', msg: line })),
-    ]);
-    const code = await new Promise(resolve => {
-      job.child.on('error', error => { send({ event: 'error', message: error.message }); resolve(1); });
-      job.child.on('close', resolve);
-    });
-    await outputs;
-    // No done line (argparse error, Ctrl-C, crash) or an exit that contradicts it means failure.
-    if (!done || (done.exit === 0 && code !== 0)) send({ event: 'done', cmd, exit: code || 1, synthetic: true });
-    jobs.delete(id);
-    response.end();
+    try {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+      // The job outlives a closed client: stopping approve or publish halfway is worse than finishing.
+      const send = event => { if (!response.writableEnded && !response.destroyed) response.write(`data: ${JSON.stringify(event)}\n\n`); };
+      let done = null;
+      const lines = (stream, wrap) => new Promise(resolve => createInterface({ input: stream }).on('line', wrap).on('close', resolve));
+      const outputs = Promise.all([
+        lines(job.child.stdout, line => {
+          let event;
+          try { event = JSON.parse(line); } catch { /* plain text */ }
+          if (!event || typeof event !== 'object' || Array.isArray(event) || typeof event.event !== 'string') event = { event: 'log', msg: line };
+          if (event.event === 'done') done = event;
+          send(event);
+        }),
+        lines(job.child.stderr, line => send({ event: 'stderr', msg: line })),
+      ]);
+      const code = await new Promise(resolve => {
+        job.child.on('error', error => { send({ event: 'error', message: error.message }); resolve(1); });
+        job.child.on('close', resolve);
+      });
+      await outputs;
+      // No done line (argparse error, Ctrl-C, crash) or an exit that contradicts it means failure.
+      if (typeof done?.exit !== 'number' || done.exit !== code) send({ event: 'done', cmd, exit: code || 1, synthetic: true });
+      response.end();
+    } finally { jobs.delete(id); }
   }
 
   async function handle(request, response, url) {
@@ -166,5 +168,8 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
     return true;
   }
 
-  return { handle, close() { for (const job of jobs.values()) job.child?.kill(); } };
+  // Jobs are not killed: killing the run-python.mjs wrapper would orphan Python mid-publish.
+  // ponytail: output after the service exits is lost and a hung CLI holds its pack's 409
+  // until restart; step 5 adds job log files, add a watchdog/cancel route if hangs show up.
+  return { handle };
 }

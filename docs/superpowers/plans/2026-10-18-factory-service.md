@@ -50,7 +50,7 @@
 - Create: `desktop/service/test/fixtures/factory-cli-stub.mjs` (used in Task 2; fixture helper writes the DB here)
 
 **Interfaces:**
-- Produces: `createFactory({ factoryDir: string, repo: string, runner?: [string, string[]], db?: string }) → { handle(request, response, url: URL): Promise<boolean>, close(): void }`.
+- Produces: `createFactory({ factoryDir: string, repo: string, runner?: [string, string[]], db?: string }) → { handle(request, response, url: URL): Promise<boolean> }`.
   `runner` defaults to `[process.execPath, [path.join(repo, 'scripts/run-python.mjs')]]`; `db` defaults to `path.join(factoryDir, 'factory.db')`.
 - Test helper in `factory.test.mjs`: `async function fixture(stubEnv = {})` → `{ root, factoryDir, url, close }` — temp dir under `<repo>/.cache/factory-test-*`, writes `factory/factory.db` by executing `factory/pipeline/schema.sql` with `DatabaseSync` and inserting one pack `ui_sfx_v1` (two assets: `click` approved, `hover` failed with one failed gate row for the current `spec_hash`, one provenance row, one release row), `factory/dist/ui_sfx_v1/listing.md`, `factory/build/ui_sfx_v1/a.wav`, `factory/spec/packs/ui_sfx_v1.yaml`, and `secret.txt` beside `factory/`. Serves `createFactory` on a bare `http.createServer` at `127.0.0.1:0`.
 
@@ -144,7 +144,7 @@ test('unknown pack or command', async () => {
 ### Task 3: Hook into the service route table
 
 **Files:**
-- Modify: `desktop/service/server.mjs` (import; `const factory = createFactory({ repo, factoryDir: path.join(repo, 'factory') })` after `files`; in the request handler before `if (url.pathname.startsWith('/api/'))`: `if (url.pathname.startsWith('/factory/')) { authorize(request); if (await factory.handle(request, response, url)) return; }`; `factory.close()` in `close()`)
+- Modify: `desktop/service/server.mjs` (import; `const factory = createFactory({ repo, factoryDir: path.join(repo, 'factory') })` after `files`; in the request handler before `if (url.pathname.startsWith('/api/'))`: `if (url.pathname.startsWith('/factory/')) { authorize(request); if (await factory.handle(request, response, url)) return; }`)
 - Modify: `desktop/service/test/factory.test.mjs`
 
 - [ ] **Step 1: Write failing test**

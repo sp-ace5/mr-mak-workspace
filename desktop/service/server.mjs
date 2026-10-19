@@ -477,7 +477,7 @@ export async function createService({ repo, uiDir, stateDir, token = secret(), n
     urls: { workspace: `${origin}/?desktop=1&surface=workspace&token=${token}`, chats: `${origin}/?desktop=1&surface=chats&token=${token}` },
       nativeMessage: event => nativeSettings.receive(event),
       async close() {
-        if (closing) return; closing = true; factory.close(); mcp.close(); nativeSettings.close(); await files.writes.catch(() => {});
+        if (closing) return; closing = true; mcp.close(); nativeSettings.close(); await files.writes.catch(() => {});
       watcher?.close(); clearTimeout(restoreTimer); coordinator.close(); clearTimeout(settingsTimer); await saveSettings(); await transcriptSave; await quick.saves; await workspace.writes;
       dictation.close(); await mobile.close();
       for (const ws of wss.clients) ws.terminate();

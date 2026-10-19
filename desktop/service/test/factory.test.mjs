@@ -52,7 +52,7 @@ async function fixture(stubEnv = {}) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${server.address().port}`;
   const calls = async () => (await readFile(log, 'utf8').catch(() => '')).split('\n').filter(Boolean).map(line => JSON.parse(line));
-  return { root, factoryDir, url, calls, close: () => { factory.close(); server.close(); } };
+  return { root, factoryDir, url, calls, close: () => server.close() };
 }
 
 async function post(url, body) {
