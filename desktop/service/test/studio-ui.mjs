@@ -49,6 +49,33 @@ try {
   assert.match(await page.locator('audio').getAttribute('src'), /\/view\//);
   await page.getByRole('heading', { name: 'VERIFY ui_sfx_v1' }).waitFor();
 
+  // Ask agent: the failing asset's gates go into the selected chat as a draft, never sent.
+  assert.equal(await click.getByRole('button', { name: 'Ask agent' }).count(), 0);   // only failing assets
+  const written = [];
+  const chat = service.sessions.make({ id: 'ask-chat', name: 'Factory chat', agent: 'codex', cwd: repo, status: 'running', open: true, cols: 80, rows: 30 });
+  service.sessions.items.set(chat.id, chat); await service.sessions.hydrate(chat);
+  chat.process = { write: data => written.push(data), resize() {}, kill() {} };
+  const chats = await page.context().newPage();
+  chats.setDefaultTimeout(10000);
+  chats.on('pageerror', error => errors.push(`chats: ${error.message}`));
+  await chats.goto(service.urls.chats);
+  await chats.getByRole('tab', { name: /Factory chat/ }).click();               // selects it in the service
+  await page.waitForTimeout(300);
+  await hover.getByRole('button', { name: 'Ask agent' }).click();
+  await page.getByRole('status').filter({ hasText: 'Draft added to Factory chat' }).waitFor();
+  // Terminal view: no Conversation is open, so the draft waits in storage for the chat.
+  await chats.waitForFunction(() => (localStorage.getItem('mrmak.chatDraft.ask-chat') || '').includes('ui_sfx_v1/hover'));
+  await chats.getByRole('group', { name: 'Chat view' }).getByRole('button', { name: 'Conversation' }).click();
+  const composer = chats.locator('textarea[aria-label="Message Codex"]');
+  for (const text of ['ui_sfx_v1/hover', 'peak: measured 0, expected <=-1', 'factory/spec/packs/ui_sfx_v1.yaml', 'Do not run approve or publish'])
+    assert.ok((await composer.inputValue()).includes(text), text);
+  // Conversation open: a second ask is appended to its draft, after a blank line.
+  await hover.getByRole('button', { name: 'Ask agent' }).click();
+  await chats.waitForFunction(() => document.querySelector('textarea[aria-label="Message Codex"]').value.split('ui_sfx_v1/hover').length === 3);
+  assert.match(await composer.inputValue(), /Do not run approve or publish\. See the asset-factory skill\.\n\nAsset factory:/);
+  assert.deepEqual(written.filter(data => String(data).includes('ui_sfx_v1')), []);  // nothing was typed into the agent
+  await chats.close();
+
   // Actions: a job streams into the log; failures and missing tools are visible.
   assert.equal(await click.getByRole('checkbox').isDisabled(), true);
   assert.equal(await page.getByRole('button', { name: 'Approve selected' }).isDisabled(), true);
@@ -122,7 +149,7 @@ try {
   assert.equal(calls.filter(call => call[0] === 'publish' && !call.includes('--dry-run')).length, 2);   // both stubbed, both typed-confirmed
 
   assert.deepEqual(errors, []);
-  console.log('Studio UI passed: pack list, playground, pack page, job log, approve confirm, failures, missing tool, publish dialog, refusal, butler login.');
+  console.log('Studio UI passed: pack list, playground, pack page, ask agent, job log, approve confirm, failures, missing tool, publish dialog, refusal, butler login.');
 } finally {
   await browser?.close();
   await service.close();

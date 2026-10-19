@@ -87,7 +87,29 @@ export function JobLog({ job }: { job: Job | null }) {
 }
 
 // Tested against butler's own output only: msg carries the target, which may contain "login".
-const LOGIN = /\bbutler login\b|not logged in|credentials/i
+// What "Ask agent" drafts into the active chat (spec section 4): the failures, where the source is,
+// and the rules from the asset-factory skill. The user reads it and presses Send.
+function askText(pack: string, asset: Asset): string {
+  const sources = [`factory/spec/packs/${pack}.yaml`, ...(asset.kind === 'shader' ? [`factory/shaders/${pack}/${asset.name}.gdshader`] : [])]
+  return [
+    `Asset factory: ${pack}/${asset.name} (${asset.kind}) failed its gates on attempt ${asset.attempts}:`,
+    ...asset.gates.filter(gate => !gate.passed).map(gate => `- ${gate.gate}: measured ${gate.measured ?? '—'}, expected ${gate.expected ?? '—'}`),
+    `Sources: ${sources.join(', ')}`,
+    'Fix the source (generator, shader or spec), never files under factory/build/. Then rebuild with',
+    `\`node scripts/run-python.mjs factory/pipeline/run.py build --pack spec/packs/${pack}.yaml --json\`.`,
+    'Do not run approve or publish. See the asset-factory skill.',
+  ].join('\n')
+}
+
+// Resolves with the note to show: where the draft went, or why it could not.
+function askAgent(pack: string, asset: Asset): Promise<string> {
+  return api<{ name: string }>('/chats/draft', { text: askText(pack, asset) }).then(
+    ({ name }) => `Draft added to ${name}. Review it in Chats, then send.`,
+    error => error instanceof Error ? error.message : String(error),
+  )
+}
+
+const LOGIN =/\bbutler login\b|not logged in|credentials/i
 
 function Releases({ releases }: { releases: Release[] }) {
   if (!releases.length) return null
@@ -134,6 +156,7 @@ function Media({ asset, repo, pack, version }: { asset: Asset; repo: string; pac
 
 export default function PackPage({ id }: { id: string }) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [asked, setAsked] = useState('')
   const onSelect = (name: string, on: boolean) => setSelected(current => { const next = new Set(current); if (on) next.add(name); else next.delete(name); return next })
   const job = useJob(id)
   const refresh = job?.finished ?? 0
@@ -150,6 +173,7 @@ export default function PackPage({ id }: { id: string }) {
     <Chips counts={counts} shipped={pack.releases.length > 0} />
     <Toolbar id={id} pack={pack} repo={repo} job={job} selected={selected} version={version} />
     <JobLog job={job} />
+    <p className="studio-muted" role="status">{asked}</p>
     <table className="studio-assets" aria-label="Assets">
       <thead><tr><th aria-label="Select" /><th>Asset</th><th>Kind</th><th>Status</th><th>Attempts</th><th>Failed gates</th><th>Preview</th></tr></thead>
       <tbody>{pack.assets.map(asset => <tr key={asset.asset_id}>
@@ -158,7 +182,10 @@ export default function PackPage({ id }: { id: string }) {
         <td>{asset.kind}</td>
         <td><span className={`studio-chip ${asset.status}`}>{asset.status}</span></td>
         <td>{asset.attempts}</td>
-        <td>{asset.gates.filter(gate => !gate.passed).map(gate => <div key={gate.gate} className="studio-gate"><b>{gate.gate}</b>: {gate.measured ?? '—'} <span className="studio-muted">(expected {gate.expected ?? '—'})</span></div>)}</td>
+        <td>
+          {asset.gates.filter(gate => !gate.passed).map(gate => <div key={gate.gate} className="studio-gate"><b>{gate.gate}</b>: {gate.measured ?? '—'} <span className="studio-muted">(expected {gate.expected ?? '—'})</span></div>)}
+          {asset.status === 'failed' && asset.gates.some(gate => !gate.passed) && <button type="button" className="studio-ask" onClick={() => void askAgent(id, asset).then(setAsked)}>Ask agent</button>}
+        </td>
         <td><Media asset={asset} repo={repo} pack={id} version={version} /></td>
       </tr>)}</tbody>
     </table>
