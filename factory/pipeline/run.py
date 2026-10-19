@@ -437,7 +437,127 @@ def cmd_package(con, pack):
     emit(f"packaged: {zip_path} ({len(assets)} assets)", "packaged", path=str(zip_path), assets=len(assets))
     return 0
 
+TEMPLATES = {
+    "ui_sfx": """pack_id: PACK_ID
+category: audio
+engine_target: godot-4.5
+# title: Shown on itch.io      description: one-line pitch      price_usd: 4.99
+
+disclosure:
+  itch_ai_tags: [code]
+  text: >-
+    Say truthfully which files, if any, a generative model produced, and where AI assisted.
+
+budgets:
+  audio:
+    sample_rate: 48000
+    bit_depth: 24
+    channels: 1
+    duration_s: [0.02, 1.5]
+    true_peak_dbtp_max: -0.9
+    dc_offset_max: 0.002
+    lead_silence_ms_max: 5
+    tail_dbfs_max: -60
+    pack_level_spread_db: 8
+
+# recipe: a generator in generators/sfx_ui.py (click, hover, confirm, error)
+assets:
+  - {kind: ui_sfx, recipe: click, name: 'UIClick_Button{var:02d}', variations: 2, seed: 100}
+""",
+    "shader": """pack_id: PACK_ID
+category: shader
+engine_target: godot-4.5
+# title: Shown on itch.io      description: one-line pitch      price_usd: 4.99
+
+disclosure:
+  itch_ai_tags: [code]
+  text: >-
+    Say truthfully which files, if any, a generative model produced, and where AI assisted.
+
+budgets:
+  shader:
+    max_uniforms: 12
+    uniform_name_regex: '[a-z][a-z0-9_]*'
+  preview:
+    renderers: [forward_plus, mobile, gl_compatibility]
+    frames: 90
+    min_frames: 90
+    background_rgb: [20, 23, 28]
+    min_coverage: 0.05
+    animated: true
+
+# Each name is shaders/PACK_ID/<name>.gdshader
+assets:
+  - {kind: shader, name: my_shader}
+""",
+    "inbox_mesh": """pack_id: PACK_ID
+category: mesh
+engine_target: godot-4.5
+# title: Shown on itch.io      description: one-line pitch      price_usd: 4.99
+
+disclosure:
+  itch_ai_tags: [3d]
+  text: >-
+    Say truthfully which files, if any, a generative model produced, and where AI assisted.
+
+budgets:
+  mesh: {}          # mesh gate code is not in this repo yet
+
+# Drop inbox/PACK_ID/<name>.glb plus <name>.json (provenance sidecar)
+assets:
+  - {kind: inbox_mesh, name: my_mesh}
+""",
+}
+PACK_ID = re.compile(r"[a-z][a-z0-9_]*")
+
+def cmd_new(kind, pack_id):
+    """Writes spec/packs/<pack_id>.yaml from a template. Never overwrites."""
+    if not PACK_ID.fullmatch(pack_id or ""):
+        emit(f"REFUSED: pack id {pack_id!r} must match [a-z][a-z0-9_]*", "refused", reason="bad pack id")
+        return 1
+    out = ROOT / "spec" / "packs" / f"{pack_id}.yaml"
+    if out.exists():
+        emit(f"REFUSED: {out} already exists", "refused", reason="spec exists")
+        return 1
+    with out.open("x", encoding="utf-8", newline="\n") as f:
+        f.write(TEMPLATES[kind].replace("PACK_ID", pack_id))
+    emit(f"created {out}", "created", path=str(out))
+    return 0
+
+def cmd_listing(con, pack):
+    """dist/<pack>/listing.md: a draft to paste into the itch.io page editor (there is no API for it)."""
+    pid = pack["pack_id"]
+    cmd_report(con, pack)                             # fresh VERIFY.md
+    dist = ROOT / "dist" / pid
+    verify = [l for l in (dist / "VERIFY.md").read_text(encoding="utf-8").splitlines() if l.startswith("- ")]
+    readme = dist / "addons" / pid / "README.md"
+    body = readme.read_text(encoding="utf-8").splitlines() if readme.exists() else []
+    if body and body[0].startswith("# "):
+        body = body[1:]
+    zip_path = dist / f"{pid}.zip"
+    files = []
+    if zip_path.exists():
+        with zipfile.ZipFile(zip_path) as zf:
+            files = zf.namelist()
+    ver = pack.get("engine_target", "").removeprefix("godot-")
+    price = pack.get("price_usd")
+    disc = pack.get("disclosure", {})
+    lines = [f"# {pack.get('title', pid)}", "",
+             pack.get("description", f"{pack['category'].capitalize()} pack for Godot {ver}."), "",
+             f"Suggested price: {f'${price:.2f}' if price is not None else 'none'}", "",
+             "## Description", "", "\n".join(body).strip() or disc.get("text", ""), "",
+             "## Verification", "", *verify, "",
+             "## AI disclosure (itch.io)", "",
+             f"Categories: {', '.join(disc.get('itch_ai_tags', [])) or 'none'}", "", disc.get("text", ""), "",
+             "## Files", "", *([f"- {f}" for f in files] or ["(not packaged yet)"]), ""]
+    out = dist / "listing.md"
+    out.write_text("\n".join(lines), encoding="utf-8")
+    emit(f"wrote {out}", "listing", path=str(out))
+    return 0
+
 def run(a):
+    if a.cmd == "new":
+        return cmd_new(a.kind, a.id)
     spec_path = ROOT / a.pack
     pack = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
     con = connect()
@@ -446,16 +566,23 @@ def run(a):
     if a.cmd == "approve": cmd_approve(con, pack, a.only)
     if a.cmd == "report":  return cmd_report(con, pack)
     if a.cmd == "package": return cmd_package(con, pack)
+    if a.cmd == "listing": return cmd_listing(con, pack)
     return 0
 
 def main():
     global JSON
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["init", "build", "approve", "report", "package"])
-    ap.add_argument("--pack", required=True)
+    ap.add_argument("cmd", choices=["new", "init", "build", "approve", "report", "package", "listing"])
+    ap.add_argument("--pack", help="spec/packs/<id>.yaml (every command except new)")
+    ap.add_argument("--kind", choices=sorted(TEMPLATES), help="new: pack template")
+    ap.add_argument("--id", help="new: pack id")
     ap.add_argument("--only", nargs="*", help="approve: just these asset names")
     ap.add_argument("--json", action="store_true", help="one JSON event per stdout line")
     a = ap.parse_args()
+    if a.cmd == "new" and not a.kind:
+        ap.error("new needs --kind and --id")
+    if a.cmd != "new" and not a.pack:
+        ap.error(f"{a.cmd} needs --pack")
     JSON = a.json
     try:
         code = run(a)
