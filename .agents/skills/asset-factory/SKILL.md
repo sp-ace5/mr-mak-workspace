@@ -1,6 +1,6 @@
 ---
 name: asset-factory
-description: Author and verify sellable Godot asset packs (shaders, UI sounds, meshes) with the factory pipeline in factory/. Use when drafting generators, shaders or pack specs, running builds, or reading gate failures.
+description: Author and verify sellable Godot asset packs (shaders, UI sounds) with the factory pipeline in factory/. Use when drafting generators, shaders or pack specs, running builds, or reading gate failures.
 ---
 
 # Asset factory
@@ -21,7 +21,7 @@ Run from the repository root. `--pack` is resolved relative to `factory/`.
 - `init`: register the pack and its assets.
 - `build`: generate assets and run the gates. Shader packs also render turntable
   previews in forward_plus, mobile and gl_compatibility; Godot windows open briefly.
-- `report`: print the gate results.
+- `report`: write `factory/dist/<pack>/VERIFY.md` (per-asset failed gates with measured and expected values), `manifest.json`, and print a one-line summary.
 - `package`: write `factory/dist/<pack>/` with VERIFY.md, manifest.json, the zip
   and, for audio packs, AudioStreamRandomizer .tres files. Shader packs also get
   a README, a demo scene and an optional HTML5 web_demo (needs the Godot path).
@@ -35,9 +35,9 @@ hand-edit `factory/build/` or `factory/dist/`; the next build overwrites them.
 
 ## Reading failures
 
-Each FAIL line names the gate, the measured value and the expected value. Change
+`build` prints `FAIL <asset> gate=measured`; the expected values are in VERIFY.md after `report`. Change
 the generator or shader, then rebuild. If a gate itself looks wrong, change it
-only with the user's agreement.
+only with the user's agreement. Mesh packs (`inbox_mesh`) are not supported yet: their gate code is not in this repo.
 
 ## Hard rules
 

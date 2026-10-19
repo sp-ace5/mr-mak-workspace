@@ -1,7 +1,7 @@
 # Asset factory loop
 
 A pack can be made with no game project. Read the brief and decide the pack:
-shaders, UI sounds or meshes, and what the buyer should be able to do with it.
+shaders or UI sounds, and what the buyer should be able to do with it.
 
 Draft the source with the `asset-factory` skill: a spec in `factory/spec/packs/`
 plus the shader or generator. Run `init`, then `build`. Read each gate failure,
