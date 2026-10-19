@@ -69,7 +69,7 @@ function JobError({ error }: { error: Error }) {
 }
 
 // Last 500 events of this pack's latest job, newest at the bottom.
-function JobLog({ job }: { job: Job | null }) {
+export function JobLog({ job }: { job: Job | null }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => { if (ref.current) ref.current.scrollTop = ref.current.scrollHeight }, [job?.events, job?.result])
   if (!job) return null

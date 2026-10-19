@@ -29,6 +29,12 @@ try {
   await row.waitFor();
   for (const text of ['approved 1', 'failed 1', 'shipped']) assert.ok((await row.textContent()).includes(text), text);
 
+  // Playground: syncs, checks and opens via the (stubbed) CLI.
+  await page.getByRole('button', { name: 'Open in playground' }).click();
+  await page.getByRole('log', { name: 'playground log' }).getByText('done (exit 0)').waitFor();
+  await page.getByRole('log', { name: 'playground log' }).getByText('opened playground').waitFor();
+  assert.deepEqual(JSON.parse((await readFile(env.STUB_LOG, 'utf8')).trim().split('\n').at(-1)), ['playground', '--json', '--open']);
+
   // Pack page: gate table, audio from the content server, rendered VERIFY.md.
   await row.getByRole('link', { name: 'ui_sfx_v1' }).click();
   await page.getByRole('heading', { name: 'ui_sfx_v1', exact: true }).waitFor();
@@ -112,11 +118,11 @@ try {
   process.env.STUB_MODE = 'ok';
 
   const calls = await stubCalls();
-  assert.deepEqual(calls[0], ['build', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json']);
+  assert.deepEqual(calls.find(call => call[0] === 'build'), ['build', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json']);
   assert.equal(calls.filter(call => call[0] === 'publish' && !call.includes('--dry-run')).length, 2);   // both stubbed, both typed-confirmed
 
   assert.deepEqual(errors, []);
-  console.log('Studio UI passed: pack list, pack page, job log, approve confirm, failures, missing tool, publish dialog, refusal, butler login.');
+  console.log('Studio UI passed: pack list, playground, pack page, job log, approve confirm, failures, missing tool, publish dialog, refusal, butler login.');
 } finally {
   await browser?.close();
   await service.close();

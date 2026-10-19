@@ -225,3 +225,34 @@ test('dry run logs are named apart from real publishes', async () => {
     assert.match((await readdir(path.join(f.factoryDir, 'build/ui_sfx_v1/jobs')))[0], /-publish-dry-run\.log$/);
   } finally { f.close(); }
 });
+
+test('playground runs the CLI without a pack', async () => {
+  const f = await fixture({ STUB_MODE: 'ok' });
+  try {
+    const result = await post(`${f.url}/factory/playground`, { open: true });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.events.at(-1), { event: 'done', cmd: 'playground', exit: 0 });
+    assert.deepEqual((await f.calls()).at(-1), ['playground', '--json', '--open']);
+    assert.equal((await post(`${f.url}/factory/playground`, { open: 'yes' })).status, 400);
+    assert.equal((await job(f, 'build', { open: true })).status, 400);
+    assert.equal((await job(f, 'playground')).status, 404);                  // not a per-pack command
+    assert.equal((await readdir(path.join(f.factoryDir, 'build/_playground/jobs'))).length, 1);
+
+    process.env.STUB_CONFIG = JSON.stringify({ ...JSON.parse(process.env.STUB_CONFIG), tools: { godot: '/no/godot.exe' } });
+    const missing = await post(`${f.url}/factory/playground`, {});
+    assert.equal(missing.status, 424);
+    assert.equal(missing.body.tool, 'godot');
+  } finally { f.close(); }
+});
+
+test('second playground request while one runs returns 409', async () => {
+  const f = await fixture();
+  try {
+    process.env.STUB_MODE = 'slowplay';
+    const first = post(`${f.url}/factory/playground`, {});
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal((await post(`${f.url}/factory/playground`, {})).status, 409);
+    assert.equal((await job(f, 'build')).status, 200);                      // packs keep their own locks
+    assert.equal((await first).status, 200);
+  } finally { f.close(); }
+});
