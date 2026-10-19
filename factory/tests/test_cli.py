@@ -1,6 +1,6 @@
 import json
 
-from conftest import cli
+from conftest import cli, py
 
 SFX = ("--pack", "spec/packs/ui_sfx_v1.yaml")
 
@@ -114,3 +114,29 @@ def test_listing_without_price_or_package(fac):
     assert md.startswith("# t_sfx\n")
     assert "Suggested price: none" in md
     assert "(not packaged yet)" in md
+
+
+def test_listing_quoted_price(fac):
+    """YAML turns `price_usd: "4.99"` into a string; it still lists, and a non-number is a clear refusal."""
+    pack = built_sfx(fac, 'price_usd: "4.99"\n')
+    r = cli(fac, "listing", *pack)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "$4.99" in (fac / "dist" / "t_sfx" / "listing.md").read_text(encoding="utf-8")
+    spec = fac / "spec" / "packs" / "t_sfx.yaml"
+    spec.write_text(spec.read_text(encoding="utf-8").replace('price_usd: "4.99"', "price_usd: free"), encoding="utf-8")
+    r = cli(fac, "listing", *pack, "--json")
+    assert r.returncode == 1
+    assert any(e["event"] == "refused" and "price_usd" in e["reason"] for e in events(r)), r.stdout
+    assert "Traceback" not in r.stderr
+
+
+def test_recipe_hash_covers_cli_and_harness(fac):
+    """Changing the CLI or a Godot harness script can change gate results, so it must force a rebuild."""
+    code = ("import pathlib; from pipeline.run import recipe_hash, ROOT; "
+            "print(recipe_hash(ROOT / 'spec' / 'packs' / 'ui_sfx_v1.yaml'))")
+    before = py(fac, code)
+    for path in (fac / "godot_harness" / "check.gd", fac / "pipeline" / "run.py"):
+        path.write_text(path.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+        after = py(fac, code)
+        assert after != before, path.name
+        before = after

@@ -12,6 +12,7 @@ appendFileSync(process.env.STUB_LOG, JSON.stringify([cmd, ...rest]) + '\n');
 if (mode === 'argparse') { process.stderr.write('usage: run.py [-h] {new,...}\n'); process.exit(2); }
 if (mode === 'nodone') { out({ event: 'log', msg: 'hi' }); process.exit(0); }
 if (mode === 'donefail') { out({ event: 'done', cmd, exit: 0 }); process.exit(3); }
+if (mode === 'lateerr') { out({ event: 'done', cmd, exit: 0 }); await new Promise(resolve => setTimeout(resolve, 150)); process.stderr.write('late warning\n'); process.exit(0); }
 if (cmd === 'playground') {
   if (mode === 'slowplay') await new Promise(resolve => setTimeout(resolve, 800));
   out({ event: 'playground', msg: 'playground: 1 approved, packaged pack(s)', packs: ['ui_sfx_v1'] });

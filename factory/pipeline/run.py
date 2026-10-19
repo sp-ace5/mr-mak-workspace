@@ -35,7 +35,13 @@ def global_spec():
     """global.yaml, overlaid with the gitignored global.local.yaml (this machine's tool paths, itch user)."""
     g = yaml.safe_load((ROOT / "spec" / "global.yaml").read_text(encoding="utf-8"))
     local = ROOT / "spec" / "global.local.yaml"
-    return merge(g, yaml.safe_load(local.read_text(encoding="utf-8")) or {}) if local.exists() else g
+    g = merge(g, yaml.safe_load(local.read_text(encoding="utf-8")) or {}) if local.exists() else g
+    # A relative tool path (one with a folder in it) means "relative to factory/", whatever the caller's cwd.
+    # A bare name such as "butler" is left for PATH.
+    for name, value in (g.get("tools") or {}).items():
+        if isinstance(value, str) and value and re.search(r"[\\/]", value) and not pathlib.Path(value).is_absolute():
+            g["tools"][name] = str((ROOT / value).resolve())
+    return g
 
 # ---------- producers: (asset row, params, attempt, out_dir) -> (output_path, provenance dict) ----------
 
@@ -144,7 +150,9 @@ def recipe_hash(spec_path):
     """Spec + generator + gate code. Change any of them and the pack rebuilds (except approved assets)."""
     h = hashlib.sha256(pathlib.Path(spec_path).read_bytes())
     pid = yaml.safe_load(pathlib.Path(spec_path).read_text(encoding="utf-8"))["pack_id"]
+    # run.py and the Godot harness scripts decide gate results too (thresholds, render and compile checks).
     for f in sorted((ROOT / "generators").glob("*.py")) + sorted((ROOT / "pipeline" / "gates").glob("*.py")) \
+            + [ROOT / "pipeline" / "run.py"] + sorted((ROOT / "godot_harness").glob("*.gd")) \
             + sorted((ROOT / "shaders" / pid).glob("*")):
         h.update(f.read_bytes())
     return h.hexdigest()
@@ -261,7 +269,7 @@ def cmd_approve(con, pack, names=None):
     con.commit()
     emit(f"approved {n} asset(s)", "approved", count=n)
 
-def cmd_report(con, pack):
+def cmd_report(con, pack, write=True):
     pid = pack["pack_id"]
     assets = con.execute("SELECT * FROM assets WHERE pack_id=? AND status!='rejected' ORDER BY name", (pid,)).fetchall()
     blockers = con.execute("SELECT b.* FROM v_license_blockers b JOIN assets a USING (asset_id) "
@@ -286,6 +294,11 @@ def cmd_report(con, pack):
                           (pid, a["asset_id"], a["attempts"])).fetchall()
         lines.append(f"| {a['name']} | {a['status']} | {a['attempts']} | "
                      + ("; ".join(f"{b['gate']}: {b['measured']} (want {b['expected']})" for b in bad) or "—") + " |")
+    ok = 0 if not blockers and len(passed) == len(assets) else 1
+    if not write:                    # publish --dry-run: the same verdict, nothing written
+        emit(f"report: {len(passed)}/{len(assets)} passed, {len(blockers)} license blockers", "report",
+             passed=len(passed), total=len(assets), blockers=len(blockers))
+        return ok
     out = ROOT / "dist" / pid
     out.mkdir(parents=True, exist_ok=True)
     (out / "VERIFY.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -298,7 +311,7 @@ def cmd_report(con, pack):
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     emit(f"wrote {out / 'VERIFY.md'}  ({len(passed)}/{len(assets)} passed, {len(blockers)} license blockers)", "report",
          path=str(out / "VERIFY.md"), passed=len(passed), total=len(assets), blockers=len(blockers))
-    return 0 if not blockers and len(passed) == len(assets) else 1
+    return ok
 
 def godot_randomizers(stage_dir, pid):
     """Build AudioStreamRandomizer .tres files in the harness at res://addons/<pid>/, the same path the zip
@@ -543,6 +556,13 @@ def cmd_listing(con, pack):
             files = zf.namelist()
     ver = pack.get("engine_target", "").removeprefix("godot-")
     price = pack.get("price_usd")
+    if price is not None:
+        try:
+            price = float(price)                      # YAML reads a quoted "4.99" as text
+        except (TypeError, ValueError):
+            emit(f"LISTING REFUSED: price_usd must be a number, got {price!r}", "refused",
+                 reason=f"price_usd must be a number, got {price!r}")
+            return 1
     disc = pack.get("disclosure", {})
     lines = [f"# {pack.get('title', pid)}", "",
              pack.get("description", f"{pack['category'].capitalize()} pack for Godot {ver}."), "",
@@ -571,7 +591,8 @@ def cmd_publish(con, pack, spec_path, dry_run=False):
     g = global_spec()
     user = (g.get("itch") or {}).get("user")
     butler = g.get("tools", {}).get("butler")
-    con.executescript((ROOT / "pipeline" / "schema.sql").read_text(encoding="utf-8"))   # adds releases to old DBs
+    if not dry_run:                                   # a dry run writes nothing, not even the schema
+        con.executescript((ROOT / "pipeline" / "schema.sql").read_text(encoding="utf-8"))   # adds releases to old DBs
     dist = ROOT / "dist" / pid
     zip_path = dist / f"{pid}.zip"
     row = con.execute("SELECT spec_hash FROM packs WHERE pack_id=?", (pid,)).fetchone()
@@ -586,12 +607,14 @@ def cmd_publish(con, pack, spec_path, dry_run=False):
         return refuse("pack was never built")
     if recipe_hash(spec_path) != row["spec_hash"]:
         return refuse("spec, generators or gates changed since the last build: rebuild first")
-    if cmd_report(con, pack) != 0:
+    if cmd_report(con, pack, write=not dry_run) != 0:
         return refuse("report has failing assets or license blockers")
     pending = [r["name"] for r in con.execute("SELECT name FROM assets WHERE pack_id=? AND status NOT IN "
                                               "('approved','rejected') ORDER BY name", (pid,))]
     if pending:
         return refuse(f"not approved: {', '.join(pending)}")
+    if not con.execute("SELECT 1 FROM assets WHERE pack_id=? AND status='approved'", (pid,)).fetchone():
+        return refuse("no approved assets: nothing to publish")
     if not zip_path.exists():
         return refuse(f"addon zip missing: {zip_path} (run package)")
     approved = {r["name"]: r["output_sha256"] for r in con.execute(

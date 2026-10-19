@@ -261,3 +261,13 @@ test('playground and pack jobs never overlap', async () => {
     assert.equal((await building).status, 200);
   } finally { f.close(); }
 });
+
+test('done is the last frame even when stderr arrives after it', async () => {
+  const f = await fixture({ STUB_MODE: 'lateerr' });
+  try {
+    const { events } = await job(f, 'listing');
+    assert.ok(events.some(event => event.event === 'stderr' && event.msg === 'late warning'));
+    assert.deepEqual(events.at(-1), { event: 'done', cmd: 'listing', exit: 0 });
+    assert.equal(events.filter(event => event.event === 'done').length, 1);
+  } finally { f.close(); }
+});

@@ -158,8 +158,8 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
           let event;
           try { event = JSON.parse(line); } catch { /* plain text */ }
           if (!event || typeof event !== 'object' || Array.isArray(event) || typeof event.event !== 'string') event = { event: 'log', msg: line };
-          if (event.event === 'done') done = event;
-          send(event);
+          if (event.event === 'done') done = event;   // held back: stderr may still be draining
+          else send(event);
         }),
         lines(job.child.stderr, line => send({ event: 'stderr', msg: line })),
       ]);
@@ -169,7 +169,8 @@ export function createFactory({ factoryDir, repo, runner = [process.execPath, [p
       });
       await outputs;
       // No done line (argparse error, Ctrl-C, crash) or an exit that contradicts it means failure.
-      if (typeof done?.exit !== 'number' || done.exit !== code) send({ event: 'done', cmd, exit: code || 1, synthetic: true });
+      // done is always the last frame: the CLI's own when it matches the exit code, else a synthetic failure.
+      send(typeof done?.exit === 'number' && done.exit === code ? done : { event: 'done', cmd, exit: code || 1, synthetic: true });
       await new Promise(resolve => job.log ? job.log.end(resolve) : resolve());   // log complete before the client sees the end
       response.end();
     } finally { jobs.delete(key); job.log?.end(); }

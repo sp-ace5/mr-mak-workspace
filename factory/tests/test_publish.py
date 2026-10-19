@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import zipfile
@@ -220,3 +221,41 @@ def test_package_clears_stale_web_demo(fac):
     assert (fac / "dist" / "t_sfx" / "t_sfx.zip").exists()
     assert not old.exists()
     assert not (fac / "dist" / "t_sfx" / "t_sfx_web.zip").exists()
+
+
+def test_refuses_pack_with_no_approved_assets(fac, butler):
+    """Every asset rejected: report, approvals and an empty manifest all agree, but there is nothing to sell."""
+    exe, calls = butler
+    pack = built_sfx(fac)
+    con = sqlite3.connect(fac / "t.db")
+    con.execute("UPDATE assets SET status='rejected' WHERE pack_id='t_sfx'")
+    con.commit()
+    con.close()
+    fake_zip(fac)
+    assert_refused(publish(fac, pack), fac, calls, "no approved assets")
+
+
+def test_dry_run_writes_nothing(fac, butler):
+    """A preview: no VERIFY.md, manifest or wiki copy is (re)written, while the report check still runs."""
+    pack = built_sfx(fac)
+    fake_zip(fac)
+    dist = fac / "dist" / "t_sfx"
+    for name in ("VERIFY.md", "manifest.json"):
+        (dist / name).unlink(missing_ok=True)
+    shutil.rmtree(fac / "wiki", ignore_errors=True)
+    r = publish(fac, pack, "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (dist / "VERIFY.md").exists() and not (dist / "manifest.json").exists()
+    assert not (fac / "wiki").exists()
+
+
+def test_relative_butler_path_resolves_against_factory(fac, butler):
+    exe, calls = butler
+    pack = built_sfx(fac)
+    fake_zip(fac)
+    rel = os.path.relpath(exe, fac)                  # e.g. ..\butler.cmd; the CLI runs with cwd = repo root
+    (fac / "spec" / "global.local.yaml").write_text(
+        f"tools: {{butler: {json.dumps(rel)}}}\nitch: {{user: tester}}\n", encoding="utf-8")
+    r = publish(fac, pack, "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert [e["cmd"][0] for e in events(r) if e["event"] == "push"][0] == str(exe)
