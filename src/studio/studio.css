@@ -37,3 +37,4 @@
 .studio-dialog h2 { margin-top: 0; }
 .studio-dialog input { font: inherit; font-family: var(--font-mono); width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--hairline-strong); background: var(--bg-deep); color: var(--text); }
 .studio-toolbar button.danger:not(:disabled) { background: var(--red-dim); color: var(--red); border-color: var(--red); }
+.studio-ask { margin-top: 6px; font: inherit; font-size: 12px; padding: 3px 10px; border-radius: var(--radius-sm); border: 1px solid var(--hairline-strong); background: var(--surface-2); color: var(--text); cursor: pointer; }

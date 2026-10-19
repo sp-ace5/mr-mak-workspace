@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { api, pickFiles, reportError, speakDesktopText, transcribeDesktopAudio, uploadImage } from './client'
+import { api, appendDraftText, chatDraftKey, pickFiles, reportError, speakDesktopText, transcribeDesktopAudio, uploadImage } from './client'
 import type { ChatSession, SystemEventsMode } from './types'
 import SystemEvent, { type SystemEventData } from '../mobile/SystemEvent'
 import BackgroundWork, { type BackgroundCommand, type WorkingAgent } from '../mobile/BackgroundWork'
@@ -23,7 +23,7 @@ interface Transcript { supported: boolean; messages: Message[]; activity?: ToolA
 interface Draft { text: string; paths: string[] }
 
 const time = (value: string) => new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-const draftKey = (id: string) => `mrmak.chatDraft.${id}`
+const draftKey = chatDraftKey
 const fileName = (file: string) => file.split(/[\\/]/).filter(Boolean).pop() || file
 function savedDraft(id: string): Draft {
   try {
@@ -94,6 +94,18 @@ export default function Conversation({ session, connected, agentLabel, openTermi
   }
 
   useEffect(() => { saveDraft(session.id, draft) }, [draft, session.id])
+  // Studio "Ask agent" text for this chat: appended to the draft, never sent.
+  useEffect(() => {
+    const take = (event: Event) => {
+      const { sessionId, text } = (event as CustomEvent<{ sessionId: string; text: string }>).detail
+      if (sessionId !== session.id) return
+      event.preventDefault()
+      setDraft(current => ({ ...current, text: appendDraftText(current.text, text) }))
+      input.current?.focus()
+    }
+    window.addEventListener('mrmak-chat-draft', take)
+    return () => window.removeEventListener('mrmak-chat-draft', take)
+  }, [session.id])
   useEffect(() => {
     let stopped = false, busy = false
     const load = async () => {

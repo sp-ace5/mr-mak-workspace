@@ -2,6 +2,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { readFile, stat, realpath } from 'node:fs/promises';
 import { watch } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { parse as parseEnv } from 'dotenv';
 import { Sessions } from './sessions.mjs';
@@ -384,6 +385,22 @@ export async function createService({ repo, uiDir, stateDir, token = secret(), n
         if (method === 'POST' && url.pathname === '/api/window') {
           if (!['chats', 'workspace'].includes(data.window) || !['show', 'hide', 'minimize', 'pin'].includes(data.action)) throw new Error('Unknown window action');
           native({ type: 'window', action: data.action, window: data.window, value: !!data.value }); return json(response, 200, { requested: true });
+        }
+        // The Studio's "Ask agent": text goes into a chat's composer as a draft. Never sent, never typed into the agent.
+        if (method === 'POST' && url.pathname === '/api/chats/draft') {
+          if (typeof data.text !== 'string' || !data.text.trim() || data.text.length > 8192) throw Object.assign(new Error('A draft is 1 to 8192 characters of text'), { status: 400 });
+          if (data.sessionId !== undefined && typeof data.sessionId !== 'string') throw Object.assign(new Error('sessionId must be a string'), { status: 400 });
+          const id = data.sessionId ?? selectedId;
+          if (!id) throw Object.assign(new Error('Open a chat first'), { status: 409 });
+          const { name, agent, open } = sessions.get(id);
+          if (!open) throw Object.assign(new Error('That chat is closed; open it from History first'), { status: 409 });
+          // Only Claude and Codex chats have a message composer (chatView.ts); a terminal-only chat would lose the draft.
+          if (!['claude', 'codex'].includes(agent)) throw Object.assign(new Error(`${name} has no message composer; select a Claude or Codex chat`), { status: 409 });
+          // Without a connected Chats window the event would be dropped while the Studio reported success.
+          if (![...clients].some(ws => ws.surface === 'chats')) throw Object.assign(new Error('Open the Chats window first'), { status: 409 });
+          broadcast('chat-draft', { sessionId: id, text: data.text, draftId: randomUUID() });   // before navigate: stored when the chat mounts
+          focus(id);
+          return json(response, 200, { sessionId: id, name });
         }
         if (method === 'POST' && url.pathname === '/api/reveal') {
           const file = await realpath(path.resolve(data.path));

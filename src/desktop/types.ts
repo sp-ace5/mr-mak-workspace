@@ -29,6 +29,6 @@ export interface DesktopState {
 }
 export interface ServiceEvent {
   type: string; id?: string; data?: string; sequence?: number; session?: ChatSession; sessions?: ChatSession[]
-  selectedId?: string; sessionId?: string; state?: string; error?: string; notice?: Notice
+  selectedId?: string; sessionId?: string; state?: string; error?: string; notice?: Notice; text?: string; draftId?: string
   operation?: Operation; settings?: Settings; owner?: VoiceOwner | null; window?: string; route?: string; preview?: Preview; handoff?: Handoff
 }
