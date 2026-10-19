@@ -1,0 +1,16 @@
+.studio { padding: 28px 32px; max-width: 1200px; color: var(--text); overflow: auto; height: 100%; box-sizing: border-box; }
+.studio h1 { font-family: var(--font-display); font-weight: 500; margin: 0 0 18px; }
+.studio h2 { font-family: var(--font-display); font-weight: 500; margin: 24px 0 10px; }
+.studio a { color: var(--pink); }
+.studio-muted { color: var(--text-dim); }
+.studio-error { color: var(--red); }
+.studio-packs { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.studio-packs li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 14px; background: var(--surface-1); border: 1px solid var(--hairline); border-radius: var(--radius); }
+.studio-packs li > a { font-weight: 600; }
+.studio-chips { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.studio-chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-dim); }
+.studio-chip.approved, .studio-chip.passed { background: var(--green-dim); color: var(--green); }
+.studio-chip.failed, .studio-chip.blocker { background: var(--red-dim); color: var(--red); }
+.studio-chip.shipped { background: var(--purple-dim); color: var(--purple); }
+.studio-chip.pending { background: var(--amber-dim); color: var(--amber); }
+.sidebar-item.studio-link { margin-bottom: 8px; }

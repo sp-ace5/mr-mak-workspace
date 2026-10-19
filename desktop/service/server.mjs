@@ -36,12 +36,12 @@ import { createFactory } from './factory.mjs';
 
 const listen = server => new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)); });
 
-export async function createService({ repo, uiDir, stateDir, token = secret(), native = () => {}, restoreSessions = false, mcpOptions, mobileOptions }) {
+export async function createService({ repo, uiDir, stateDir, token = secret(), native = () => {}, restoreSessions = false, mcpOptions, mobileOptions, factoryOptions }) {
   repo = await realpath(repo);
   stateDir ||= path.join(repo, '.mrmak');
   const dictation = mobileOptions?.dictation || new MobileDictation(repo);
   const files = new Files(repo);
-  const factory = createFactory({ repo, factoryDir: path.join(repo, 'factory') });
+  const factory = createFactory({ repo, factoryDir: path.join(repo, 'factory'), ...factoryOptions });
   const attachments = new Attachments(repo);
   const library = new ContextLibrary(repo);
   const knowledgeSources = await readJson(path.join(stateDir, 'knowledge-sources.json'), []);
