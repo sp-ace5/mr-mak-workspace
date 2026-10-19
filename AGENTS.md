@@ -46,3 +46,4 @@ read the sample cards.
 `knowledge/`: lessons.
 `context/`: the owner's optional preferences and goals.
 `inbox/`: incoming references.
+`factory/`: asset factory pipeline; see `processes/asset-factory.md`.

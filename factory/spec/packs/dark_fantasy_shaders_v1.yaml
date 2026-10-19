@@ -1,0 +1,28 @@
+pack_id: dark_fantasy_shaders_v1
+category: shader
+engine_target: godot-4.5
+
+disclosure:
+  itch_ai_tags: [code]
+  text: >-
+    Shader code was drafted with AI assistance (Claude), then tuned, reviewed and tested by the author.
+    No textures, images or meshes from generative models: every pattern is procedural.
+
+budgets:
+  shader:
+    max_uniforms: 12
+    uniform_name_regex: '[a-z][a-z0-9_]*'
+  preview:
+    renderers: [forward_plus, mobile, gl_compatibility]
+    frames: 90
+    min_frames: 90
+    background_rgb: [20, 23, 28]      # preview.gd background Color(0.08, 0.09, 0.11)
+    min_coverage: 0.05
+    animated: true
+
+# Each name is shaders/<pack_id>/<name>.gdshader
+assets:
+  - {kind: shader, name: runic_glow}
+  - {kind: shader, name: dark_water}
+  - {kind: shader, name: dissolve_edge}
+  - {kind: shader, name: procedural_stone}

@@ -19,6 +19,7 @@
     "desktop:test:ui": "node desktop/service/test/ui.mjs && node desktop/service/test/links-ui.mjs && node desktop/service/test/scroll-ui.mjs && node desktop/service/test/history-ui.mjs && node desktop/service/test/groups-ui.mjs && node desktop/service/test/conversation-ui.mjs && node desktop/service/test/theme-ui.mjs && node desktop/service/test/voice-ui.mjs && node desktop/service/test/desktop-dictation-ui.mjs && node desktop/service/test/mobile-ui.mjs && node desktop/service/test/workspace-edit-ui.mjs",
     "test": "npm run desktop:test",
     "test:preview": "node scripts/check-preview-ui.mjs",
+    "test:factory": "node scripts/run-python.mjs -m pytest factory/tests -q",
     "test:template": "node scripts/check-template.mjs && node scripts/sync-skills.mjs --check && npm run test:assets",
     "test:assets": "node --test scripts/asset-delivery/test/*.test.mjs",
     "skills:sync": "node scripts/sync-skills.mjs",

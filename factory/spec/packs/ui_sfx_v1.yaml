@@ -1,0 +1,28 @@
+pack_id: ui_sfx_v1
+category: audio
+engine_target: godot-4.5
+
+disclosure:
+  itch_ai_tags: [code]
+  text: >-
+    All sounds are synthesized by the author's own procedural DSP code (no generative audio model, no sample library).
+    The generator code was written with AI assistance (Claude) and reviewed and tested by the author.
+
+budgets:
+  audio:
+    sample_rate: 48000
+    bit_depth: 24
+    channels: 1
+    duration_s: [0.02, 1.5]
+    true_peak_dbtp_max: -0.9
+    dc_offset_max: 0.002
+    lead_silence_ms_max: 5
+    tail_dbfs_max: -60
+    pack_level_spread_db: 8     # one-shots of the same recipe stay within ±4 dB of their median
+
+# Names follow the free UCS convention: CatID_FXName_CreatorID_SourceID
+assets:
+  - {kind: ui_sfx, recipe: click,   name: 'UIClick_ButtonSoft{var:02d}_NK_UISFX1', variations: 4, seed: 100}
+  - {kind: ui_sfx, recipe: hover,   name: 'UIClick_Hover{var:02d}_NK_UISFX1',      variations: 4, seed: 200}
+  - {kind: ui_sfx, recipe: confirm, name: 'UIBeep_Confirm{var:02d}_NK_UISFX1',     variations: 4, seed: 300}
+  - {kind: ui_sfx, recipe: error,   name: 'UIAlert_Error{var:02d}_NK_UISFX1',      variations: 4, seed: 400}

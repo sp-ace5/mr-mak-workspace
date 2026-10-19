@@ -41,3 +41,14 @@ Thumbs.db
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# Asset factory: generated state (sources are committed)
+factory/factory.db
+factory/build/
+factory/inbox/*
+!factory/inbox/.gitkeep
+factory/wiki/
+factory/godot_harness/.godot/
+factory/godot_harness/addons/
+factory/godot_harness/pack/
+factory/godot_harness/**/*.uid
