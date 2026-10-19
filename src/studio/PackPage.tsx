@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, setPreview, useDesktop } from '../desktop/client'
 import type { Preview } from '../desktop/types'
 import { MarkdownView } from '../components/MarkdownDocument'
-import { factory, factoryPath, type Asset, type PackDetail } from './api'
+import { factory, FactoryError, factoryPath, type Asset, type JobCommand, type JobEvent, type PackDetail } from './api'
+import { startJob, useJob, type Job } from './jobs'
 import { loadPreview, usePoll, usePreview } from './poll'
 
 const STATUSES = ['pending', 'failed', 'passed', 'approved', 'rejected']
@@ -12,6 +13,60 @@ export function Chips({ counts, shipped }: { counts: Record<string, number>; shi
     {STATUSES.filter(status => counts[status]).map(status => <span key={status} className={`studio-chip ${status}`}>{status} {counts[status]}</span>)}
     {shipped && <span className="studio-chip shipped">shipped</span>}
   </span>
+}
+
+function Toolbar({ id, pack, repo, job, selected, refresh }: { id: string; pack: PackDetail; repo: string; job: Job | null; selected: Set<string>; refresh: number }) {
+  const [note, setNote] = useState('')
+  const demo = usePreview(factoryPath(repo, `dist/${id}/web_demo/index.html`), refresh)
+  const busy = !!job?.running
+  const passed = pack.assets.filter(asset => asset.status === 'passed').map(asset => asset.name)
+  const picked = [...selected].filter(name => passed.includes(name))
+  const run = (cmd: JobCommand, body: object = {}) => { setNote(''); return startJob(id, cmd, body) }
+  const approve = (names: string[]) => { if (window.confirm(`Approve ${names.length} asset${names.length === 1 ? '' : 's'} in ${id}?`)) void run('approve', { names }) }
+  const copyListing = async () => {
+    const done = await run('listing')
+    if (done.result?.exit !== 0) return
+    const listing = await loadPreview(factoryPath(repo, `dist/${id}/listing.md`), true)
+    if (!listing?.text) return setNote('listing.md was not written')
+    await navigator.clipboard.writeText(listing.text).then(() => setNote('Listing copied'), () => setNote('Clipboard is not available'))
+  }
+  return <div className="studio-toolbar">
+    <button type="button" disabled={busy} onClick={() => void run('build')}>Build</button>
+    <button type="button" disabled={busy || !picked.length} onClick={() => approve(picked)}>Approve selected</button>
+    <button type="button" disabled={busy || !passed.length} onClick={() => approve(passed)}>Approve all passed</button>
+    <button type="button" disabled={busy} onClick={() => void run('package')}>Package</button>
+    <button type="button" disabled={busy} onClick={() => void copyListing()}>Copy listing</button>
+    <button type="button" disabled={!demo?.url} onClick={() => demo && setPreview(demo)}>Open web demo</button>
+    {note && <span className="studio-muted" role="status">{note}</span>}
+  </div>
+}
+
+const line = (event: JobEvent) => event.event === 'done'
+  ? (event.exit === 0 ? 'done (exit 0)' : `failed (exit ${event.exit ?? '?'})${typeof event.msg === 'string' ? ' — ' + event.msg : ''}`)
+  : typeof event.msg === 'string' ? event.msg : typeof event.message === 'string' ? event.message : JSON.stringify(event)
+
+function JobError({ error }: { error: Error }) {
+  if (error instanceof FactoryError && error.status === 424) {
+    const tool = String(error.body.tool ?? '')
+    return <div className="studio-setup" role="alert">
+      <b>Setup needed: {tool}</b>
+      <p>{tool === 'python' ? 'Install Python 3 so the factory CLI can run.' : `${tool} not found at "${String(error.body.path ?? '')}" — set it in factory/spec/global.local.yaml.`}</p>
+    </div>
+  }
+  return <p className="studio-error" role="alert">{error instanceof FactoryError && error.status === 409 ? 'A job is already running for this pack.' : error.message}</p>
+}
+
+// Last 500 events of this pack's latest job, newest at the bottom.
+function JobLog({ job }: { job: Job | null }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (ref.current) ref.current.scrollTop = ref.current.scrollHeight }, [job?.events, job?.result])
+  if (!job) return null
+  if (job.error) return <JobError error={job.error} />
+  const events = job.result && !job.events.includes(job.result) ? [...job.events, job.result] : job.events
+  return <div className="studio-log" role="log" aria-label={`${job.cmd} log`} ref={ref}>
+    {events.map((event, index) => <div key={index} className={event.event === 'done' ? (event.exit === 0 ? 'job-done' : 'job-failed') : event.event === 'stderr' ? 'job-stderr' : undefined}>{line(event)}</div>)}
+    {job.running && <div className="studio-muted">{job.cmd} running…</div>}
+  </div>
 }
 
 interface Listing { entries: { name: string; path: string; directory: boolean }[] }
@@ -46,7 +101,8 @@ function Media({ asset, repo, pack }: { asset: Asset; repo: string; pack: string
 export default function PackPage({ id }: { id: string }) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const onSelect = (name: string, on: boolean) => setSelected(current => { const next = new Set(current); if (on) next.add(name); else next.delete(name); return next })
-  const refresh = 0
+  const job = useJob(id)
+  const refresh = job?.finished ?? 0
   const { repo } = useDesktop()
   const { data: pack, error } = usePoll(() => factory<PackDetail>(`/packs/${encodeURIComponent(id)}`), `pack:${id}`, refresh)
   const verify = usePreview(factoryPath(repo, `dist/${id}/VERIFY.md`), refresh)
@@ -56,6 +112,8 @@ export default function PackPage({ id }: { id: string }) {
   for (const asset of pack.assets) counts[asset.status] = (counts[asset.status] || 0) + 1
   return <>
     <Chips counts={counts} shipped={pack.releases.length > 0} />
+    <Toolbar id={id} pack={pack} repo={repo} job={job} selected={selected} refresh={refresh} />
+    <JobLog job={job} />
     <table className="studio-assets" aria-label="Assets">
       <thead><tr><th aria-label="Select" /><th>Asset</th><th>Kind</th><th>Status</th><th>Attempts</th><th>Failed gates</th><th>Preview</th></tr></thead>
       <tbody>{pack.assets.map(asset => <tr key={asset.asset_id}>

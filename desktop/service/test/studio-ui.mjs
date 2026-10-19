@@ -1,7 +1,7 @@
 // Asset Studio against a fixture factory/. The CLI is a node stub: no Python,
 // butler, approve or publish ever runs.
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createService } from '../server.mjs';
@@ -43,8 +43,34 @@ try {
   assert.match(await page.locator('audio').getAttribute('src'), /\/view\//);
   await page.getByRole('heading', { name: 'VERIFY ui_sfx_v1' }).waitFor();
 
+  // Actions: a job streams into the log; failures and missing tools are visible.
+  assert.equal(await click.getByRole('checkbox').isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'Approve selected' }).isDisabled(), true);
+  const log = page.getByRole('log');
+  await page.getByRole('button', { name: 'Build' }).click();
+  await log.getByText('done (exit 0)').waitFor();
+  for (const text of ['not json', 'warn']) await log.getByText(text, { exact: true }).first().waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Build' }).isDisabled(), false);
+
+  process.env.STUB_MODE = 'argparse';
+  await page.getByRole('button', { name: 'Package' }).click();
+  await log.locator('.job-failed', { hasText: 'failed (exit 2)' }).waitFor();
+  await log.getByText(/^usage:/).waitFor();
+
+  process.env.STUB_MODE = 'ok';
+  const missing = path.join(repo, 'no-godot.exe');
+  process.env.STUB_CONFIG = JSON.stringify({ ...JSON.parse(env.STUB_CONFIG), tools: { godot: missing } });
+  await page.getByRole('button', { name: 'Build' }).click();
+  const card = page.getByRole('alert').filter({ hasText: 'godot' });
+  await card.waitFor();
+  assert.ok((await card.textContent()).includes(missing));
+
+  const calls = (await readFile(env.STUB_LOG, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
+  assert.deepEqual(calls[0], ['build', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json']);
+  assert.ok(calls.every(call => !['approve', 'publish'].includes(call[0])));
+
   assert.deepEqual(errors, []);
-  console.log('Studio UI passed: pack list, pack page.');
+  console.log('Studio UI passed: pack list, pack page, job log, failures, missing tool.');
 } finally {
   await browser?.close();
   await service.close();

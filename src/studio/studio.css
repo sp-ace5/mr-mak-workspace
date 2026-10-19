@@ -23,3 +23,12 @@
 .studio-frames button { padding: 0; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: none; cursor: zoom-in; }
 .studio-frames img { display: block; width: 72px; height: 72px; object-fit: cover; border-radius: var(--radius-sm); }
 .studio-verify { margin-top: 18px; padding-top: 8px; border-top: 1px solid var(--hairline); }
+.studio-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0; }
+.studio-toolbar button { font: inherit; padding: 6px 12px; border-radius: var(--radius-sm); border: 1px solid var(--hairline-strong); background: var(--surface-2); color: var(--text); cursor: pointer; }
+.studio-toolbar button:disabled { opacity: 0.45; cursor: default; }
+.studio-log { font-family: var(--font-mono); font-size: 12px; max-height: 260px; overflow: auto; padding: 10px 12px; background: var(--bg-deep); border: 1px solid var(--hairline); border-radius: var(--radius); white-space: pre-wrap; }
+.studio-log .job-stderr { color: var(--text-dim); }
+.studio-log .job-done { color: var(--green); }
+.studio-log .job-failed { color: var(--red); font-weight: 600; }
+.studio-setup { padding: 12px 14px; border-radius: var(--radius); background: var(--amber-dim); color: var(--amber); }
+.studio-setup p { margin: 6px 0 0; color: var(--text); }
