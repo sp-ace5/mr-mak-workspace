@@ -1,10 +1,14 @@
-# Machine-wide settings + the license allowlist. Re-read a license page before you change its row,
+# Machine-wide settings + the license allowlist. Per-machine overrides (tool paths, itch user) go in the
+# gitignored global.local.yaml next to this file. Re-read a license page before you change its row,
 # and bump checked_on. commercial_ok means "may end up inside a pack you SELL", not "legal to use".
 tools:
   godot: 'C:\Tools\Godot\Godot_v4.5-stable_win64_console.exe'   # the _console exe, so stdout/stderr reach Python
   blender: 'C:\Program Files\Blender Foundation\Blender\blender.exe'
   resvg: 'C:\Tools\resvg\resvg.exe'
   butler: 'C:\Tools\butler\butler.exe'
+
+itch:
+  user: ''   # your itch.io username; set it in global.local.yaml
 
 paths:
   wiki_raw: 'wiki/raw/packs'      # report copies each VERIFY.md here for the LLM-maintained wiki to digest

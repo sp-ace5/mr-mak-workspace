@@ -20,8 +20,17 @@ def connect():
 def sha256(p):
     return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 
+def merge(base, over):
+    """Dicts merge key by key; anything else in `over` replaces."""
+    if not isinstance(base, dict) or not isinstance(over, dict):
+        return over
+    return {**base, **{k: merge(base.get(k), v) for k, v in over.items()}}
+
 def global_spec():
-    return yaml.safe_load((ROOT / "spec" / "global.yaml").read_text(encoding="utf-8"))
+    """global.yaml, overlaid with the gitignored global.local.yaml (this machine's tool paths, itch user)."""
+    g = yaml.safe_load((ROOT / "spec" / "global.yaml").read_text(encoding="utf-8"))
+    local = ROOT / "spec" / "global.local.yaml"
+    return merge(g, yaml.safe_load(local.read_text(encoding="utf-8")) or {}) if local.exists() else g
 
 # ---------- producers: (asset row, params, attempt, out_dir) -> (output_path, provenance dict) ----------
 
@@ -341,11 +350,24 @@ def shader_extras(stage_dir, pack):
     shutil.copytree(work / "demo", stage_dir / "demo")
     (stage_dir / "README.md").write_text(shader_readme(pack, sorted((stage_dir / "shaders").glob("*.gdshader"))),
                                          encoding="utf-8")
-    web_demo(stage_dir, pid, godot)
+    web_demo(stage_dir, pack, godot)
 
-def web_demo(stage_dir, pid, godot):
+def export_template(engine_target):
+    """Where the Godot editor installs export templates on this OS, for engine_target 'godot-X.Y'."""
+    home = pathlib.Path.home()
+    if sys.platform == "win32":
+        data = pathlib.Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming") / "Godot"
+    elif sys.platform == "darwin":
+        data = home / "Library" / "Application Support" / "Godot"
+    else:
+        data = pathlib.Path(os.environ.get("XDG_DATA_HOME") or home / ".local" / "share") / "godot"
+    ver = engine_target.removeprefix("godot-") + ".stable"
+    return data / "export_templates" / ver / "web_nothreads_release.zip"
+
+def web_demo(stage_dir, pack, godot):
     """Exports demo.tscn for the browser (gl_compatibility, no threads, so itch.io needs no special headers)."""
-    tpl = pathlib.Path(os.environ["APPDATA"]) / "Godot" / "export_templates" / "4.5.stable" / "web_nothreads_release.zip"
+    pid = pack["pack_id"]
+    tpl = export_template(pack.get("engine_target", "godot-4.5"))
     if not tpl.exists():
         print(f"SKIP web demo: no export templates at {tpl.parent}")
         return
