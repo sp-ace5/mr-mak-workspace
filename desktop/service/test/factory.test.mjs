@@ -205,3 +205,17 @@ test('unknown pack or command', async () => {
     assert.deepEqual(await f.calls(), []);
   } finally { f.close(); }
 });
+
+test('service requires the bearer token on /factory routes', async () => {
+  const { createService } = await import('../server.mjs');
+  const repo = await mkdtemp(path.join(repoRoot, '.cache', 'factory-service-'));
+  await mkdir(path.join(repo, 'ui')); await mkdir(path.join(repo, 'factory'));
+  await writeFile(path.join(repo, 'ui', 'index.html'), '<html></html>');
+  const service = await createService({ repo, uiDir: path.join(repo, 'ui') });
+  try {
+    assert.equal((await fetch(service.origin + '/factory/packs')).status, 401);
+    const response = await fetch(service.origin + '/factory/packs', { headers: { Authorization: `Bearer ${service.token}` } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { packs: [] });
+  } finally { await service.close(); }
+});

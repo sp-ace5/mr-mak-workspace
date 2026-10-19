@@ -32,6 +32,7 @@ import { rewindToMessage } from './message-edit.mjs';
 import { LocalReadAloud } from './local-read-aloud.mjs';
 import { Handoffs } from './handoff.mjs';
 import { chatCommands } from './chat-commands.mjs';
+import { createFactory } from './factory.mjs';
 
 const listen = server => new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)); });
 
@@ -40,6 +41,7 @@ export async function createService({ repo, uiDir, stateDir, token = secret(), n
   stateDir ||= path.join(repo, '.mrmak');
   const dictation = mobileOptions?.dictation || new MobileDictation(repo);
   const files = new Files(repo);
+  const factory = createFactory({ repo, factoryDir: path.join(repo, 'factory') });
   const attachments = new Attachments(repo);
   const library = new ContextLibrary(repo);
   const knowledgeSources = await readJson(path.join(stateDir, 'knowledge-sources.json'), []);
@@ -196,6 +198,7 @@ export async function createService({ repo, uiDir, stateDir, token = secret(), n
       // is issued only through an authorized messages request for this chat.
       const media = /^\/media\/([a-f0-9-]{36})\/([a-zA-Z0-9_-]{43})$/.exec(url.pathname);
       if (media && ['GET', 'HEAD'].includes(request.method)) return await conversationMedia.serve(request, response, media[1], media[2], 'desktop', url.searchParams.get('download') === '1');
+      if (url.pathname.startsWith('/factory/')) { authorize(request); if (await factory.handle(request, response, url)) return; }
       if (url.pathname.startsWith('/api/')) {
         authorize(request);
         const method = request.method;
@@ -474,7 +477,7 @@ export async function createService({ repo, uiDir, stateDir, token = secret(), n
     urls: { workspace: `${origin}/?desktop=1&surface=workspace&token=${token}`, chats: `${origin}/?desktop=1&surface=chats&token=${token}` },
       nativeMessage: event => nativeSettings.receive(event),
       async close() {
-        if (closing) return; closing = true; mcp.close(); nativeSettings.close(); await files.writes.catch(() => {});
+        if (closing) return; closing = true; factory.close(); mcp.close(); nativeSettings.close(); await files.writes.catch(() => {});
       watcher?.close(); clearTimeout(restoreTimer); coordinator.close(); clearTimeout(settingsTimer); await saveSettings(); await transcriptSave; await quick.saves; await workspace.writes;
       dictation.close(); await mobile.close();
       for (const ws of wss.clients) ws.terminate();
