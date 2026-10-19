@@ -44,6 +44,7 @@ Thumbs.db
 
 # Asset factory: generated state (sources are committed)
 factory/factory.db
+factory/spec/global.local.yaml
 factory/build/
 factory/inbox/*
 !factory/inbox/.gitkeep

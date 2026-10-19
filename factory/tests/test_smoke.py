@@ -1,46 +1,41 @@
-import os
-import shutil
-import subprocess
+import json
 import sys
-from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
-IGNORE = shutil.ignore_patterns(
-    "build", "dist", "wiki", "inbox", "factory.db", "__pycache__",
-    ".godot", "addons", "pack", "tests",
-)
+from conftest import REPO, cli, py
 
 
-def run_cli(cmd, pack, tmp_path):
-    dst = tmp_path / "factory"
-    if not dst.exists():
-        shutil.copytree(REPO / "factory", dst, ignore=IGNORE)
-    return subprocess.run(
-        [sys.executable, str(dst / "pipeline" / "run.py"), cmd, "--pack", pack],
-        cwd=REPO,
-        env={**os.environ, "FACTORY_DB": str(tmp_path / "t.db")},
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
+def snapshot():
+    """Every file the factory writes in the real checkout, with its mtime."""
+    root = REPO / "factory"
+    files = [p for d in ("build", "dist") for p in (root / d).rglob("*") if p.is_file()]
+    files += [root / "factory.db"] if (root / "factory.db").exists() else []
+    return {str(p.relative_to(root)): p.stat().st_mtime_ns for p in files}
 
 
-def test_ui_sfx_pack_ships_from_repo_root(tmp_path):
+def test_ui_sfx_pack_ships_from_repo_root(fac):
+    before = snapshot()
     for cmd in ("init", "build", "approve"):
-        r = run_cli(cmd, "spec/packs/ui_sfx_v1.yaml", tmp_path)
+        r = cli(fac, cmd, "--pack", "spec/packs/ui_sfx_v1.yaml")
         assert r.returncode == 0, r.stderr
-    r = run_cli("report", "spec/packs/ui_sfx_v1.yaml", tmp_path)
+    r = cli(fac, "report", "--pack", "spec/packs/ui_sfx_v1.yaml")
     assert r.returncode == 0, r.stderr
     assert "16/16 passed, 0 license blockers" in r.stdout
-    assert not (REPO / "factory" / "build" / "ui_sfx_v1").exists()
-    assert not (REPO / "factory" / "dist" / "ui_sfx_v1").exists()
+    assert (fac / "t.db").exists()
+    assert snapshot() == before
 
 
-def test_tests_never_touch_real_db(tmp_path):
-    real = REPO / "factory" / "factory.db"
-    before = real.stat().st_mtime_ns if real.exists() else None
-    r = run_cli("init", "spec/packs/ui_sfx_v1.yaml", tmp_path)
-    assert r.returncode == 0, r.stderr
-    after = real.stat().st_mtime_ns if real.exists() else None
-    assert before == after
-    assert (tmp_path / "t.db").exists()
+def test_global_local_overlay(fac):
+    (fac / "spec" / "global.local.yaml").write_text("tools: {butler: X}\nitch: {user: me}\n", encoding="utf-8")
+    g = json.loads(py(fac, "import json; from pipeline.run import global_spec; print(json.dumps(global_spec()))"))
+    assert g["tools"]["butler"] == "X"
+    assert g["tools"]["godot"].endswith(".exe")
+    assert g["itch"]["user"] == "me"
+    assert g["licenses"]
+
+
+def test_export_template_per_os(fac, tmp_path):
+    env = {"APPDATA": str(tmp_path / "ad"), "HOME": str(tmp_path / "h"), "XDG_DATA_HOME": str(tmp_path / "x")}
+    got = py(fac, "from pipeline.run import export_template; print(export_template('godot-4.5'))", env).strip()
+    base = {"win32": tmp_path / "ad" / "Godot", "darwin": tmp_path / "h" / "Library" / "Application Support" / "Godot"}
+    want = base.get(sys.platform, tmp_path / "x" / "godot") / "export_templates" / "4.5.stable" / "web_nothreads_release.zip"
+    assert got == str(want)

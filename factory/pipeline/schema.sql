@@ -83,3 +83,9 @@ CREATE VIEW IF NOT EXISTS v_pack_cost AS
   SELECT a.pack_id, COUNT(DISTINCT a.asset_id) AS assets, ROUND(COALESCE(SUM(p.cost_usd),0),2) AS usd
   FROM assets a LEFT JOIN provenance p USING (asset_id)
   GROUP BY a.pack_id;
+
+-- One row per butler push that succeeded. spec_hash = the recipe whose gate results were shipped.
+CREATE TABLE IF NOT EXISTS releases (
+  pack_id TEXT NOT NULL REFERENCES packs(pack_id), channel TEXT NOT NULL, target TEXT NOT NULL,
+  file_sha256 TEXT NOT NULL, butler_build TEXT, spec_hash TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')));

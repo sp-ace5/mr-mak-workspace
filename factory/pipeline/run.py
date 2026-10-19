@@ -4,12 +4,17 @@ Kill it any time; `build` picks up where it stopped (state lives in factory.db, 
 `approve` = you listened / looked and you're happy: passed assets are frozen and never rebuilt.
 `package` = verifies report exits 0, bundles approved files into dist/<pack>/<pack>.zip ready for itch.io."""
 
-import argparse, hashlib, json, os, pathlib, re, shutil, sqlite3, subprocess, sys, uuid, zipfile
+import argparse, hashlib, json, os, pathlib, re, shutil, sqlite3, subprocess, sys, traceback, uuid, zipfile
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 DB = pathlib.Path(os.environ.get("FACTORY_DB") or ROOT / "factory.db")
+
+JSON = False                      # --json: one event object per stdout line instead of human text
+
+def emit(text, event="log", **fields):
+    print(json.dumps({"event": event, "msg": text, **fields}) if JSON else text, flush=True)
 
 def connect():
     con = sqlite3.connect(DB)
@@ -20,8 +25,17 @@ def connect():
 def sha256(p):
     return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 
+def merge(base, over):
+    """Dicts merge key by key; anything else in `over` replaces."""
+    if not isinstance(base, dict) or not isinstance(over, dict):
+        return over
+    return {**base, **{k: merge(base.get(k), v) for k, v in over.items()}}
+
 def global_spec():
-    return yaml.safe_load((ROOT / "spec" / "global.yaml").read_text(encoding="utf-8"))
+    """global.yaml, overlaid with the gitignored global.local.yaml (this machine's tool paths, itch user)."""
+    g = yaml.safe_load((ROOT / "spec" / "global.yaml").read_text(encoding="utf-8"))
+    local = ROOT / "spec" / "global.local.yaml"
+    return merge(g, yaml.safe_load(local.read_text(encoding="utf-8")) or {}) if local.exists() else g
 
 # ---------- producers: (asset row, params, attempt, out_dir) -> (output_path, provenance dict) ----------
 
@@ -124,7 +138,7 @@ def cmd_init(con, pack):
                     "text_sha256=excluded.text_sha256, checked_on=excluded.checked_on",
                     {"needs_attribution": 0, "conditions": None, "source_url": None, "text_sha256": None, **lic})
     con.commit()
-    print(f"db ready: {DB}")
+    emit(f"db ready: {DB}", "db", path=str(DB))
 
 def recipe_hash(spec_path):
     """Spec + generator + gate code. Change any of them and the pack rebuilds (except approved assets)."""
@@ -181,14 +195,14 @@ def cmd_build(con, pack, spec_path, max_attempts=3):
     todo = [r for r in rows if r["status"] == "pending" or r["kind"] not in INBOX_KINDS]
     for r in rows:
         if r not in todo:
-            print(f"WAIT  {r['name']}  (failed; fix it where you made it and re-export)")
+            emit(f"WAIT  {r['name']}  (failed; fix it where you made it and re-export)", "wait", asset=r["name"])
     known = {r[0] for r in con.execute("SELECT license_id FROM licenses")}
     for row in todo:
         attempt = row["attempts"] + 1
         params = json.loads(row["params_json"])
         out, prov = PRODUCERS[row["kind"]](row, params, attempt, out_dir)
         if out is None:                                 # nothing new to check; attempt not used up
-            print(f"WAIT  {row['name']}  ({prov})")
+            emit(f"WAIT  {row['name']}  ({prov})", "wait", asset=row["name"])
             continue
         if prov["license_id"] not in known:            # a typo or a license nobody has reviewed: block it
             prov["license_id"] = "unknown"
@@ -209,8 +223,9 @@ def cmd_build(con, pack, spec_path, max_attempts=3):
                     ("passed" if ok else "failed", attempt, str(out), out_sha, run_id,
                      json.dumps({**params, "metrics": metrics}), row["asset_id"]))
         con.commit()                        # commit per asset = resumable
-        print(f"{'PASS' if ok else 'FAIL'}  {row['name']}  " +
-              ", ".join(f"{n}={m}" for n, p, m, e in results if not p))
+        failed = [{"gate": n, "measured": m, "expected": e} for n, p, m, e in results if not p]
+        emit(f"{'PASS' if ok else 'FAIL'}  {row['name']}  " + ", ".join(f"{f['gate']}={f['measured']}" for f in failed),
+             "gate", asset=row["name"], ok=ok, failed=failed)
     pack_level_gates(con, pack, recipe)
 
 def pack_level_gates(con, pack, recipe):
@@ -244,7 +259,7 @@ def cmd_approve(con, pack, names=None):
         args += names
     n = con.execute(q, args).rowcount
     con.commit()
-    print(f"approved {n} asset(s)")
+    emit(f"approved {n} asset(s)", "approved", count=n)
 
 def cmd_report(con, pack):
     pid = pack["pack_id"]
@@ -281,7 +296,8 @@ def cmd_report(con, pack):
     manifest = [{"name": a["name"], "kind": a["kind"], "file": pathlib.Path(a["output_path"]).name,
                  "sha256": a["output_sha256"], **json.loads(a["params_json"]).get("metrics", {})} for a in passed]
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
-    print(f"wrote {out / 'VERIFY.md'}  ({len(passed)}/{len(assets)} passed, {len(blockers)} license blockers)")
+    emit(f"wrote {out / 'VERIFY.md'}  ({len(passed)}/{len(assets)} passed, {len(blockers)} license blockers)", "report",
+         path=str(out / "VERIFY.md"), passed=len(passed), total=len(assets), blockers=len(blockers))
     return 0 if not blockers and len(passed) == len(assets) else 1
 
 def godot_randomizers(stage_dir, pid):
@@ -303,7 +319,7 @@ def godot_randomizers(stage_dir, pid):
         raise RuntimeError(f"make_randomizers failed:\n{p.stdout}\n{p.stderr}")
     for t in tres:
         shutil.copy2(t, stage_dir / t.name)
-    print(f"randomizers: {', '.join(t.name for t in tres)}")
+    emit(f"randomizers: {', '.join(t.name for t in tres)}")
 
 UNIFORM = re.compile(r"^\s*uniform\s+(\w+)\s+(\w+)\s*(?::\s*([^=;]+?))?\s*(?:=\s*([^;]+?))?\s*;", re.M)
 
@@ -341,13 +357,26 @@ def shader_extras(stage_dir, pack):
     shutil.copytree(work / "demo", stage_dir / "demo")
     (stage_dir / "README.md").write_text(shader_readme(pack, sorted((stage_dir / "shaders").glob("*.gdshader"))),
                                          encoding="utf-8")
-    web_demo(stage_dir, pid, godot)
+    web_demo(stage_dir, pack, godot)
 
-def web_demo(stage_dir, pid, godot):
+def export_template(engine_target):
+    """Where the Godot editor installs export templates on this OS, for engine_target 'godot-X.Y'."""
+    home = pathlib.Path.home()
+    if sys.platform == "win32":
+        data = pathlib.Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming") / "Godot"
+    elif sys.platform == "darwin":
+        data = home / "Library" / "Application Support" / "Godot"
+    else:
+        data = pathlib.Path(os.environ.get("XDG_DATA_HOME") or home / ".local" / "share") / "godot"
+    ver = engine_target.removeprefix("godot-") + ".stable"
+    return data / "export_templates" / ver / "web_nothreads_release.zip"
+
+def web_demo(stage_dir, pack, godot):
     """Exports demo.tscn for the browser (gl_compatibility, no threads, so itch.io needs no special headers)."""
-    tpl = pathlib.Path(os.environ["APPDATA"]) / "Godot" / "export_templates" / "4.5.stable" / "web_nothreads_release.zip"
+    pid = pack["pack_id"]
+    tpl = export_template(pack.get("engine_target", "godot-4.5"))
     if not tpl.exists():
-        print(f"SKIP web demo: no export templates at {tpl.parent}")
+        emit(f"SKIP web demo: no export templates at {tpl.parent}", "skip")
         return
     proj = ROOT / "build" / pid / "web"
     if proj.exists():
@@ -374,18 +403,21 @@ def web_demo(stage_dir, pid, godot):
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in out.iterdir():
             zf.write(f, f.name)
-    print(f"web demo: {zip_path}")
+    emit(f"web demo: {zip_path}", "web_demo", path=str(zip_path))
 
 def cmd_package(con, pack):
     """Verifies report is 0, then packages all approved/passed files + VERIFY.md + manifest.json into dist/<id>/<id>.zip."""
     if cmd_report(con, pack) != 0:
-        print("PACKAGE ABORTED: report has failing assets or license blockers.")
+        emit("PACKAGE ABORTED: report has failing assets or license blockers.", "refused",
+             reason="report has failing assets or license blockers")
         return 1
     pid = pack["pack_id"]
     dist_dir = ROOT / "dist" / pid
     stage_dir = dist_dir / "addons" / pid
     if stage_dir.exists():
         shutil.rmtree(stage_dir)
+    shutil.rmtree(dist_dir / "web_demo", ignore_errors=True)    # only this run's export may be published
+    (dist_dir / f"{pid}_web.zip").unlink(missing_ok=True)
     stage_dir.mkdir(parents=True, exist_ok=True)
     assets = con.execute("SELECT * FROM assets WHERE pack_id=? AND status IN ('passed','approved') ORDER BY name", (pid,)).fetchall()
     for a in assets:
@@ -404,23 +436,237 @@ def cmd_package(con, pack):
         for f in stage_dir.rglob("*"):
             if f.is_file():
                 zf.write(f, f.relative_to(dist_dir))
-    print(f"packaged: {zip_path} ({len(assets)} assets)")
+    emit(f"packaged: {zip_path} ({len(assets)} assets)", "packaged", path=str(zip_path), assets=len(assets))
     return 0
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["init", "build", "approve", "report", "package"])
-    ap.add_argument("--pack", required=True)
-    ap.add_argument("--only", nargs="*", help="approve: just these asset names")
-    a = ap.parse_args()
+TEMPLATES = {
+    "ui_sfx": """pack_id: PACK_ID
+category: audio
+engine_target: godot-4.5
+# title: Shown on itch.io      description: one-line pitch      price_usd: 4.99
+
+disclosure:
+  itch_ai_tags: [code]
+  text: >-
+    Say truthfully which files, if any, a generative model produced, and where AI assisted.
+
+budgets:
+  audio:
+    sample_rate: 48000
+    bit_depth: 24
+    channels: 1
+    duration_s: [0.02, 1.5]
+    true_peak_dbtp_max: -0.9
+    dc_offset_max: 0.002
+    lead_silence_ms_max: 5
+    tail_dbfs_max: -60
+    pack_level_spread_db: 8
+
+# recipe: a generator in generators/sfx_ui.py (click, hover, confirm, error)
+assets:
+  - {kind: ui_sfx, recipe: click, name: 'UIClick_Button{var:02d}', variations: 2, seed: 100}
+""",
+    "shader": """pack_id: PACK_ID
+category: shader
+engine_target: godot-4.5
+# title: Shown on itch.io      description: one-line pitch      price_usd: 4.99
+
+disclosure:
+  itch_ai_tags: [code]
+  text: >-
+    Say truthfully which files, if any, a generative model produced, and where AI assisted.
+
+budgets:
+  shader:
+    max_uniforms: 12
+    uniform_name_regex: '[a-z][a-z0-9_]*'
+  preview:
+    renderers: [forward_plus, mobile, gl_compatibility]
+    frames: 90
+    min_frames: 90
+    background_rgb: [20, 23, 28]
+    min_coverage: 0.05
+    animated: true
+
+# Each name is shaders/PACK_ID/<name>.gdshader
+assets:
+  - {kind: shader, name: my_shader}
+""",
+    "inbox_mesh": """pack_id: PACK_ID
+category: mesh
+engine_target: godot-4.5
+# title: Shown on itch.io      description: one-line pitch      price_usd: 4.99
+
+disclosure:
+  itch_ai_tags: [3d]
+  text: >-
+    Say truthfully which files, if any, a generative model produced, and where AI assisted.
+
+budgets:
+  mesh: {}          # mesh gate code is not in this repo yet
+
+# Drop inbox/PACK_ID/<name>.glb plus <name>.json (provenance sidecar)
+assets:
+  - {kind: inbox_mesh, name: my_mesh}
+""",
+}
+PACK_ID = re.compile(r"[a-z][a-z0-9_]*")
+
+def cmd_new(kind, pack_id):
+    """Writes spec/packs/<pack_id>.yaml from a template. Never overwrites."""
+    if not PACK_ID.fullmatch(pack_id or ""):
+        emit(f"REFUSED: pack id {pack_id!r} must match [a-z][a-z0-9_]*", "refused", reason="bad pack id")
+        return 1
+    out = ROOT / "spec" / "packs" / f"{pack_id}.yaml"
+    if out.exists():
+        emit(f"REFUSED: {out} already exists", "refused", reason="spec exists")
+        return 1
+    with out.open("x", encoding="utf-8", newline="\n") as f:
+        f.write(TEMPLATES[kind].replace("PACK_ID", pack_id))
+    emit(f"created {out}", "created", path=str(out))
+    return 0
+
+def cmd_listing(con, pack):
+    """dist/<pack>/listing.md: a draft to paste into the itch.io page editor (there is no API for it)."""
+    pid = pack["pack_id"]
+    cmd_report(con, pack)                             # fresh VERIFY.md
+    dist = ROOT / "dist" / pid
+    verify = [l for l in (dist / "VERIFY.md").read_text(encoding="utf-8").splitlines() if l.startswith("- ")]
+    readme = dist / "addons" / pid / "README.md"
+    body = readme.read_text(encoding="utf-8").splitlines() if readme.exists() else []
+    if body and body[0].startswith("# "):
+        body = body[1:]
+    zip_path = dist / f"{pid}.zip"
+    files = []
+    if zip_path.exists():
+        with zipfile.ZipFile(zip_path) as zf:
+            files = zf.namelist()
+    ver = pack.get("engine_target", "").removeprefix("godot-")
+    price = pack.get("price_usd")
+    disc = pack.get("disclosure", {})
+    lines = [f"# {pack.get('title', pid)}", "",
+             pack.get("description", f"{pack['category'].capitalize()} pack for Godot {ver}."), "",
+             f"Suggested price: {f'${price:.2f}' if price is not None else 'none'}", "",
+             "## Description", "", "\n".join(body).strip() or disc.get("text", ""), "",
+             "## Verification", "", *verify, "",
+             "## AI disclosure (itch.io)", "",
+             f"Categories: {', '.join(disc.get('itch_ai_tags', [])) or 'none'}", "", disc.get("text", ""), "",
+             "## Files", "", *([f"- {f}" for f in files] or ["(not packaged yet)"]), ""]
+    out = dist / "listing.md"
+    out.write_text("\n".join(lines), encoding="utf-8")
+    emit(f"wrote {out}", "listing", path=str(out))
+    return 0
+
+def dir_sha256(d):
+    """Hash of a directory's files (relative path + bytes, sorted), for channels pushed as a folder."""
+    h = hashlib.sha256()
+    for f in sorted(p for p in d.rglob("*") if p.is_file()):
+        h.update(f.relative_to(d).as_posix().encode() + b"\0" + f.read_bytes())
+    return h.hexdigest()
+
+def cmd_publish(con, pack, spec_path, dry_run=False):
+    """Uploads the addon zip (and web_demo if present) to itch.io with butler. Refuses unless the pack is
+    shippable: report exits 0, every live asset is approved, the zip exists, and nothing changed since the build."""
+    pid = pack["pack_id"]
+    g = global_spec()
+    user = (g.get("itch") or {}).get("user")
+    butler = g.get("tools", {}).get("butler")
+    con.executescript((ROOT / "pipeline" / "schema.sql").read_text(encoding="utf-8"))   # adds releases to old DBs
+    dist = ROOT / "dist" / pid
+    zip_path = dist / f"{pid}.zip"
+    row = con.execute("SELECT spec_hash FROM packs WHERE pack_id=?", (pid,)).fetchone()
+    def refuse(reason):
+        emit(f"PUBLISH REFUSED: {reason}", "refused", reason=reason)
+        return 1
+    if not user:
+        return refuse("itch.user is not set (put it in spec/global.local.yaml)")
+    if not butler or not pathlib.Path(butler).exists():
+        return refuse(f"butler not found at {butler!r} (set tools.butler in spec/global.local.yaml)")
+    if not row:
+        return refuse("pack was never built")
+    if recipe_hash(spec_path) != row["spec_hash"]:
+        return refuse("spec, generators or gates changed since the last build: rebuild first")
+    if cmd_report(con, pack) != 0:
+        return refuse("report has failing assets or license blockers")
+    pending = [r["name"] for r in con.execute("SELECT name FROM assets WHERE pack_id=? AND status NOT IN "
+                                              "('approved','rejected') ORDER BY name", (pid,))]
+    if pending:
+        return refuse(f"not approved: {', '.join(pending)}")
+    if not zip_path.exists():
+        return refuse(f"addon zip missing: {zip_path} (run package)")
+    approved = {r["name"]: r["output_sha256"] for r in con.execute(
+        "SELECT name, output_sha256 FROM assets WHERE pack_id=? AND status='approved'", (pid,))}
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            shipped = {m["name"]: m["sha256"] for m in json.loads(zf.read(f"addons/{pid}/manifest.json"))}
+    except (KeyError, ValueError, zipfile.BadZipFile):
+        shipped = None
+    if shipped != approved:                           # zip built from older outputs, or not by package
+        return refuse("zip does not match the approved assets: run package again")
+    pushes = [("godot-addon", zip_path, sha256(zip_path))]
+    if (dist / "web_demo").is_dir():
+        pushes.append(("html5", dist / "web_demo", dir_sha256(dist / "web_demo")))
+    for channel, path, file_sha in pushes:
+        target = f"{user}/{pid}:{channel}"
+        cmd = [str(butler), "push", str(path), target]
+        emit(f"{'DRY RUN  ' if dry_run else ''}{subprocess.list2cmdline(cmd)}", "push",
+             channel=channel, target=target, cmd=cmd, dry_run=dry_run)
+        if dry_run:
+            continue
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)   # no login prompt hang
+        if p.returncode != 0:
+            tail = "\n".join((p.stdout + p.stderr).splitlines()[-40:])
+            print(tail, file=sys.stderr)
+            emit(f"butler push failed ({p.returncode}) for {target}", "error", message=tail, channel=channel)
+            return 1
+        # ponytail: butler_build stays NULL until step 5 pins butler's output format
+        con.execute("INSERT INTO releases (pack_id, channel, target, file_sha256, spec_hash) VALUES (?,?,?,?,?)",
+                    (pid, channel, target, file_sha, row["spec_hash"]))
+        con.commit()                                  # one row per push that really happened
+        emit(f"pushed {target}", "pushed", channel=channel, target=target)
+    return 0
+
+def run(a):
+    if a.cmd == "new":
+        return cmd_new(a.kind, a.id)
     spec_path = ROOT / a.pack
     pack = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
     con = connect()
     if a.cmd == "init":    cmd_init(con, pack)
     if a.cmd == "build":   cmd_build(con, pack, spec_path)
     if a.cmd == "approve": cmd_approve(con, pack, a.only)
-    if a.cmd == "report":  sys.exit(cmd_report(con, pack))
-    if a.cmd == "package": sys.exit(cmd_package(con, pack))
+    if a.cmd == "report":  return cmd_report(con, pack)
+    if a.cmd == "package": return cmd_package(con, pack)
+    if a.cmd == "listing": return cmd_listing(con, pack)
+    if a.cmd == "publish": return cmd_publish(con, pack, spec_path, a.dry_run)
+    return 0
+
+def main():
+    global JSON
+    ap = argparse.ArgumentParser()
+    ap.add_argument("cmd", choices=["new", "init", "build", "approve", "report", "package", "listing", "publish"])
+    ap.add_argument("--pack", help="spec/packs/<id>.yaml (every command except new)")
+    ap.add_argument("--kind", choices=sorted(TEMPLATES), help="new: pack template")
+    ap.add_argument("--id", help="new: pack id")
+    ap.add_argument("--only", nargs="*", help="approve: just these asset names")
+    ap.add_argument("--dry-run", action="store_true", help="publish: print the butler commands, push nothing")
+    ap.add_argument("--json", action="store_true", help="one JSON event per stdout line")
+    a = ap.parse_args()
+    if a.cmd == "new" and not a.kind:
+        ap.error("new needs --kind and --id")
+    if a.cmd != "new" and not a.pack:
+        ap.error(f"{a.cmd} needs --pack")
+    JSON = a.json
+    try:
+        code = run(a)
+    except Exception as e:
+        traceback.print_exc()                       # human mode: the traceback is the whole report
+        code = 1
+        if JSON:
+            emit(str(e), "error", message=str(e))
+    if JSON:
+        print(json.dumps({"event": "done", "cmd": a.cmd, "exit": code}), flush=True)
+    return code
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
