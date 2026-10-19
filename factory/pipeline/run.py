@@ -626,9 +626,50 @@ def cmd_publish(con, pack, spec_path, dry_run=False):
         emit(f"pushed {target}", "pushed", channel=channel, target=target)
     return 0
 
+PLAYGROUND = ROOT.parent / "playground"
+
+def cmd_playground(con, open_after=False):
+    """Copies every approved, packaged pack into playground/addons (tools/sync_packs.gd), checks the scene loads
+    headless with zero errors, and with --open then launches Godot on it, detached."""
+    con.executescript((ROOT / "pipeline" / "schema.sql").read_text(encoding="utf-8"))   # a fresh DB is fine
+    godot = global_spec()["tools"]["godot"]
+    ready = [r["pack_id"] for r in con.execute(
+        "SELECT pack_id FROM assets GROUP BY pack_id "
+        "HAVING SUM(status = 'approved') > 0 AND SUM(status NOT IN ('approved', 'rejected')) = 0 ORDER BY pack_id")]
+    dirs = [ROOT / "dist" / p / "addons" / p for p in ready if (ROOT / "dist" / p / "addons" / p / "manifest.json").exists()]
+    emit(f"playground: {len(dirs)} approved, packaged pack(s)", "playground", packs=[d.name for d in dirs])
+    def headless(*args):
+        return subprocess.run([godot, "--headless", "--path", str(PLAYGROUND), *args],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600)
+    sync = headless("--script", "res://tools/sync_packs.gd", "--", *map(str, dirs))
+    for line in sync.stdout.splitlines():
+        if line.startswith(("synced ", "removed ")):
+            word, pid = line.split(" ", 1)
+            emit(line, word, pack=pid)
+    if sync.returncode != 0 or "err=0" not in sync.stdout:
+        emit("playground sync failed", "error", message="\n".join((sync.stdout + sync.stderr).splitlines()[-40:]))
+        return 1
+    headless("--import")
+    check = headless("--script", "res://tools/check.gd")
+    counts = next((json.loads(l) for l in check.stdout.splitlines() if l.startswith("{")), None)
+    errors = [l for l in check.stderr.splitlines() if "ERROR" in l]
+    if counts is None or errors:
+        emit("playground did not load cleanly", "error", message="\n".join((errors or check.stderr.splitlines())[-40:]))
+        return 1
+    emit(f"playground loads: {counts['shaders']} shaders, {counts['sounds']} sounds", "check", **counts)
+    if open_after:
+        detached = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} \
+            if os.name == "nt" else {"start_new_session": True}
+        subprocess.Popen([godot, "--path", str(PLAYGROUND)], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **detached)
+        emit(f"opened {PLAYGROUND}", "opened", path=str(PLAYGROUND))
+    return 0
+
 def run(a):
     if a.cmd == "new":
         return cmd_new(a.kind, a.id)
+    if a.cmd == "playground":
+        return cmd_playground(connect(), a.open)
     spec_path = ROOT / a.pack
     pack = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
     con = connect()
@@ -644,17 +685,19 @@ def run(a):
 def main():
     global JSON
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["new", "init", "build", "approve", "report", "package", "listing", "publish"])
-    ap.add_argument("--pack", help="spec/packs/<id>.yaml (every command except new)")
+    ap.add_argument("cmd", choices=["new", "init", "build", "approve", "report", "package", "listing", "publish",
+                                    "playground"])
+    ap.add_argument("--pack", help="spec/packs/<id>.yaml (every command except new and playground)")
     ap.add_argument("--kind", choices=sorted(TEMPLATES), help="new: pack template")
     ap.add_argument("--id", help="new: pack id")
     ap.add_argument("--only", nargs="*", help="approve: just these asset names")
     ap.add_argument("--dry-run", action="store_true", help="publish: print the butler commands, push nothing")
+    ap.add_argument("--open", action="store_true", help="playground: launch Godot on it after a clean load")
     ap.add_argument("--json", action="store_true", help="one JSON event per stdout line")
     a = ap.parse_args()
     if a.cmd == "new" and not a.kind:
         ap.error("new needs --kind and --id")
-    if a.cmd != "new" and not a.pack:
+    if a.cmd not in ("new", "playground") and not a.pack:
         ap.error(f"{a.cmd} needs --pack")
     JSON = a.json
     try:
