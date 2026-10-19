@@ -555,6 +555,66 @@ def cmd_listing(con, pack):
     emit(f"wrote {out}", "listing", path=str(out))
     return 0
 
+def dir_sha256(d):
+    """Hash of a directory's files (relative path + bytes, sorted), for channels pushed as a folder."""
+    h = hashlib.sha256()
+    for f in sorted(p for p in d.rglob("*") if p.is_file()):
+        h.update(f.relative_to(d).as_posix().encode() + b"\0" + f.read_bytes())
+    return h.hexdigest()
+
+def cmd_publish(con, pack, spec_path, dry_run=False):
+    """Uploads the addon zip (and web_demo if present) to itch.io with butler. Refuses unless the pack is
+    shippable: report exits 0, every live asset is approved, the zip exists, and nothing changed since the build."""
+    pid = pack["pack_id"]
+    g = global_spec()
+    user = (g.get("itch") or {}).get("user")
+    butler = g.get("tools", {}).get("butler")
+    con.executescript((ROOT / "pipeline" / "schema.sql").read_text(encoding="utf-8"))   # adds releases to old DBs
+    dist = ROOT / "dist" / pid
+    zip_path = dist / f"{pid}.zip"
+    row = con.execute("SELECT spec_hash FROM packs WHERE pack_id=?", (pid,)).fetchone()
+    def refuse(reason):
+        emit(f"PUBLISH REFUSED: {reason}", "refused", reason=reason)
+        return 1
+    if not user:
+        return refuse("itch.user is not set (put it in spec/global.local.yaml)")
+    if not butler or not pathlib.Path(butler).exists():
+        return refuse(f"butler not found at {butler!r} (set tools.butler in spec/global.local.yaml)")
+    if not row:
+        return refuse("pack was never built")
+    if recipe_hash(spec_path) != row["spec_hash"]:
+        return refuse("spec, generators or gates changed since the last build: rebuild first")
+    if cmd_report(con, pack) != 0:
+        return refuse("report has failing assets or license blockers")
+    pending = [r["name"] for r in con.execute("SELECT name FROM assets WHERE pack_id=? AND status NOT IN "
+                                              "('approved','rejected') ORDER BY name", (pid,))]
+    if pending:
+        return refuse(f"not approved: {', '.join(pending)}")
+    if not zip_path.exists():
+        return refuse(f"addon zip missing: {zip_path} (run package)")
+    pushes = [("godot-addon", zip_path, sha256(zip_path))]
+    if (dist / "web_demo").is_dir():
+        pushes.append(("html5", dist / "web_demo", dir_sha256(dist / "web_demo")))
+    for channel, path, file_sha in pushes:
+        target = f"{user}/{pid}:{channel}"
+        cmd = [str(butler), "push", str(path), target]
+        emit(f"{'DRY RUN  ' if dry_run else ''}{subprocess.list2cmdline(cmd)}", "push",
+             channel=channel, target=target, cmd=cmd, dry_run=dry_run)
+        if dry_run:
+            continue
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        if p.returncode != 0:
+            tail = "\n".join((p.stdout + p.stderr).splitlines()[-40:])
+            print(tail, file=sys.stderr)
+            emit(f"butler push failed ({p.returncode}) for {target}", "error", message=tail, channel=channel)
+            return 1
+        # ponytail: butler_build stays NULL until step 5 pins butler's output format
+        con.execute("INSERT INTO releases (pack_id, channel, target, file_sha256, spec_hash) VALUES (?,?,?,?,?)",
+                    (pid, channel, target, file_sha, row["spec_hash"]))
+        con.commit()                                  # one row per push that really happened
+        emit(f"pushed {target}", "pushed", channel=channel, target=target)
+    return 0
+
 def run(a):
     if a.cmd == "new":
         return cmd_new(a.kind, a.id)
@@ -567,16 +627,18 @@ def run(a):
     if a.cmd == "report":  return cmd_report(con, pack)
     if a.cmd == "package": return cmd_package(con, pack)
     if a.cmd == "listing": return cmd_listing(con, pack)
+    if a.cmd == "publish": return cmd_publish(con, pack, spec_path, a.dry_run)
     return 0
 
 def main():
     global JSON
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["new", "init", "build", "approve", "report", "package", "listing"])
+    ap.add_argument("cmd", choices=["new", "init", "build", "approve", "report", "package", "listing", "publish"])
     ap.add_argument("--pack", help="spec/packs/<id>.yaml (every command except new)")
     ap.add_argument("--kind", choices=sorted(TEMPLATES), help="new: pack template")
     ap.add_argument("--id", help="new: pack id")
     ap.add_argument("--only", nargs="*", help="approve: just these asset names")
+    ap.add_argument("--dry-run", action="store_true", help="publish: print the butler commands, push nothing")
     ap.add_argument("--json", action="store_true", help="one JSON event per stdout line")
     a = ap.parse_args()
     if a.cmd == "new" and not a.kind:
