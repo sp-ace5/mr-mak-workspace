@@ -1,4 +1,5 @@
 """publish never reaches itch.io here: butler is a stub script set through the temp copy's global.local.yaml."""
+import hashlib
 import json
 import os
 import sqlite3
@@ -129,6 +130,8 @@ def test_dry_run_prints_commands_only(fac, butler):
         [str(exe), "push", str(fac / "dist" / "t_sfx" / "web_demo"), "tester/t_sfx:html5"],
     ]
     assert all(p["dry_run"] for p in pushes)
+    assert pushes[0]["sha256"] == hashlib.sha256(z.read_bytes()).hexdigest()   # what the dialog shows
+    assert len(pushes[1]["sha256"]) == 64
     assert calls_made(calls) == []
     assert releases(fac) == []
 

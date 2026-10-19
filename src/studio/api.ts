@@ -8,7 +8,7 @@ export interface Gate { gate: string; passed: 0 | 1; measured: string | null; ex
 export interface Asset { asset_id: string; name: string; kind: string; status: string; attempts: number; output_path: string | null; gates: Gate[] }
 export interface PackDetail extends PackSummary { spec_hash: string; assets: Asset[]; provenance: object[]; releases: Release[] }
 export interface JobEvent { event: string; msg?: string; message?: string; exit?: number; synthetic?: boolean; [key: string]: unknown }
-export type JobCommand = 'build' | 'approve' | 'package' | 'listing'
+export type JobCommand = 'build' | 'approve' | 'package' | 'listing' | 'publish'
 
 export class FactoryError extends Error {
   status: number

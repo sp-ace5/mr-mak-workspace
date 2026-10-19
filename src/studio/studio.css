@@ -32,3 +32,8 @@
 .studio-log .job-failed { color: var(--red); font-weight: 600; }
 .studio-setup { padding: 12px 14px; border-radius: var(--radius); background: var(--amber-dim); color: var(--amber); }
 .studio-setup p { margin: 6px 0 0; color: var(--text); }
+.studio-dialog { max-width: 640px; width: calc(100% - 32px); padding: 20px 24px; color: var(--text); background: var(--surface-solid); border: 1px solid var(--hairline-strong); border-radius: var(--radius); box-shadow: var(--shadow-2); }
+.studio-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+.studio-dialog h2 { margin-top: 0; }
+.studio-dialog input { font: inherit; font-family: var(--font-mono); width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--hairline-strong); background: var(--bg-deep); color: var(--text); }
+.studio-toolbar button.danger:not(:disabled) { background: var(--red-dim); color: var(--red); border-color: var(--red); }
