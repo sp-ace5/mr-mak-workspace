@@ -40,19 +40,23 @@ export async function runJob(pack: string, cmd: JobCommand, body: object, onEven
   const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader()
   let buffer = ''
   let done: JobEvent = { event: 'done', cmd, exit: 1, synthetic: true, msg: 'connection closed before the job finished' }
-  for (;;) {
-    const { value, done: ended } = await reader.read()
-    if (value) buffer += value
-    const frames = buffer.split('\n\n')
-    buffer = ended ? '' : frames.pop()!
-    for (const frame of frames) {
-      if (!frame.startsWith('data: ')) continue
-      const event = JSON.parse(frame.slice(6)) as JobEvent
-      if (event.event === 'done') done = event
-      onEvent(event)
+  try {
+    for (;;) {
+      // A dropped connection ends the stream like EOF: the log so far stays and the synthetic done shows.
+      const { value, done: ended } = await reader.read().catch(() => ({ value: undefined, done: true }))
+      if (value) buffer += value
+      const frames = buffer.split('\n\n')
+      buffer = ended ? '' : frames.pop()!
+      for (const frame of frames) {
+        if (!frame.startsWith('data: ')) continue
+        let event: JobEvent
+        try { event = JSON.parse(frame.slice(6)) as JobEvent } catch { event = { event: 'log', msg: frame.slice(6) } }
+        if (event.event === 'done') done = event
+        onEvent(event)
+      }
+      if (ended) return done
     }
-    if (ended) return done
-  }
+  } finally { reader.cancel().catch(() => {}) }
 }
 
 // Absolute path of a file under factory/, in the separator style the repo path uses.

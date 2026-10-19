@@ -27,7 +27,8 @@ export async function writeFactoryFixture(root) {
     INSERT INTO licenses (license_id, commercial_ok, checked_on) VALUES ('own-work', 1, '2026-10-18');
     INSERT INTO assets (asset_id, pack_id, kind, name, status, attempts, run_id) VALUES
       ('ui_sfx_v1/click', 'ui_sfx_v1', 'ui_sfx', 'click', 'approved', 1, 'r1'),
-      ('ui_sfx_v1/hover', 'ui_sfx_v1', 'ui_sfx', 'hover', 'failed', 2, 'r2');
+      ('ui_sfx_v1/hover', 'ui_sfx_v1', 'ui_sfx', 'hover', 'failed', 2, 'r2'),
+      ('ui_sfx_v1/tap', 'ui_sfx_v1', 'ui_sfx', 'tap', 'passed', 1, 'r3');
     INSERT INTO gate_results (asset_id, attempt, recipe, gate, passed, measured, expected) VALUES
       ('ui_sfx_v1/hover', 1, 'h1', 'peak', 1, '-3', '<=-1'),
       ('ui_sfx_v1/hover', 2, 'h1', 'peak', 0, '0', '<=-1'),

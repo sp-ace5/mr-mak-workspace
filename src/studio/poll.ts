@@ -11,7 +11,7 @@ export function usePoll<T>(load: () => Promise<T>, key: string, refresh = 0) {
   const [state, setState] = useState<{ key: string; data: T | null; error: string | null }>({ key, data: null, error: null })
   useEffect(() => {
     let alive = true
-    const tick = () => load().then(
+    const tick = () => document.hidden ? undefined : load().then(
       data => { if (alive) setState({ key, data, error: null }) },
       error => { if (alive && !(error instanceof FactoryError && error.status === 503)) setState(s => ({ key, data: s.key === key ? s.data : null, error: error.message })) },
     )
@@ -24,17 +24,17 @@ export function usePoll<T>(load: () => Promise<T>, key: string, refresh = 0) {
 }
 
 // /api/preview returns token-free content-server URLs an <audio> or <img> can load.
-const previews = new Map<string, Promise<Preview | null>>()
-export function loadPreview(file: string, fresh = false): Promise<Preview | null> {
-  if (fresh || !previews.has(file)) previews.set(file, api<Preview>(`/preview?path=${encodeURIComponent(file)}`).catch(() => null))
-  return previews.get(file)!
-}
-export function usePreview(file: string | null, refresh = 0) {
-  const [state, setState] = useState<{ file: string | null; preview: Preview | null }>({ file: null, preview: null })
+export const loadPreview = (file: string) => api<Preview>(`/preview?path=${encodeURIComponent(file)}`).catch(() => null)
+
+// Refetches whenever `version` changes (pack data or a finished job), so a build
+// run from a terminal still updates VERIFY.md, audio and the web demo button.
+export function usePreview(file: string | null, version = '') {
+  const [state, setState] = useState<{ key: string; preview: Preview | null }>({ key: '', preview: null })
+  const key = `${file}\n${version}`
   useEffect(() => {
     let alive = true
-    if (file) loadPreview(file, refresh > 0).then(preview => { if (alive) setState({ file, preview }) })
+    if (file) void loadPreview(file).then(preview => { if (alive) setState({ key, preview }) })
     return () => { alive = false }
-  }, [file, refresh])
-  return state.file === file ? state.preview : null
+  }, [file, key])
+  return state.key.split('\n')[0] === String(file) ? state.preview : null
 }

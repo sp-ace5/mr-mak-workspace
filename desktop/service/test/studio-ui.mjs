@@ -52,6 +52,18 @@ try {
   for (const text of ['not json', 'warn']) await log.getByText(text, { exact: true }).first().waitFor();
   assert.equal(await page.getByRole('button', { name: 'Build' }).isDisabled(), false);
 
+  // Approving is a user decision: a dismissed confirm runs nothing.
+  await page.getByRole('checkbox', { name: 'Select tap' }).check();
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.getByRole('button', { name: 'Approve selected' }).click();
+  await page.waitForTimeout(500);
+  const stubCalls = async () => (await readFile(env.STUB_LOG, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
+  assert.ok((await stubCalls()).every(call => call[0] !== 'approve'));
+  page.once('dialog', dialog => { assert.equal(dialog.message(), 'Approve 1 asset in ui_sfx_v1?'); void dialog.accept(); });
+  await page.getByRole('button', { name: 'Approve selected' }).click();
+  await page.getByRole('log', { name: 'approve log' }).getByText('done (exit 0)').waitFor();
+  assert.deepEqual((await stubCalls()).at(-1), ['approve', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json', '--only', 'tap']);
+
   process.env.STUB_MODE = 'argparse';
   await page.getByRole('button', { name: 'Package' }).click();
   await log.locator('.job-failed', { hasText: 'failed (exit 2)' }).waitFor();
@@ -65,12 +77,12 @@ try {
   await card.waitFor();
   assert.ok((await card.textContent()).includes(missing));
 
-  const calls = (await readFile(env.STUB_LOG, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
+  const calls = await stubCalls();
   assert.deepEqual(calls[0], ['build', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json']);
-  assert.ok(calls.every(call => !['approve', 'publish'].includes(call[0])));
+  assert.ok(calls.every(call => call[0] !== 'publish'));
 
   assert.deepEqual(errors, []);
-  console.log('Studio UI passed: pack list, pack page, job log, failures, missing tool.');
+  console.log('Studio UI passed: pack list, pack page, job log, approve confirm, failures, missing tool.');
 } finally {
   await browser?.close();
   await service.close();

@@ -42,7 +42,7 @@ test('packs list reads the fixture DB', async () => {
     assert.equal(response.status, 200);
     const { packs } = await response.json();
     assert.equal(packs[0].pack_id, 'ui_sfx_v1');
-    assert.deepEqual(packs[0].counts, { approved: 1, failed: 1 });
+    assert.deepEqual(packs[0].counts, { approved: 1, failed: 1, passed: 1 });
     assert.equal(packs[0].blockers, 0);
     assert.equal(packs[0].last_release.target, 'me/ui_sfx_v1');
   } finally { f.close(); }
@@ -52,7 +52,7 @@ test('pack detail has assets, current gate results, provenance, releases', async
   const f = await fixture();
   try {
     const pack = await (await fetch(f.url + '/factory/packs/ui_sfx_v1')).json();
-    assert.equal(pack.assets.length, 2);
+    assert.equal(pack.assets.length, 3);
     const hover = pack.assets.find(asset => asset.name === 'hover');
     assert.deepEqual(hover.gates.map(gate => gate.passed), [0]);
     assert.equal(pack.provenance.length, 1);

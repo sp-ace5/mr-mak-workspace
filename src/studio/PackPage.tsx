@@ -15,9 +15,9 @@ export function Chips({ counts, shipped }: { counts: Record<string, number>; shi
   </span>
 }
 
-function Toolbar({ id, pack, repo, job, selected, refresh }: { id: string; pack: PackDetail; repo: string; job: Job | null; selected: Set<string>; refresh: number }) {
+function Toolbar({ id, pack, repo, job, selected, version }: { id: string; pack: PackDetail; repo: string; job: Job | null; selected: Set<string>; version: string }) {
   const [note, setNote] = useState('')
-  const demo = usePreview(factoryPath(repo, `dist/${id}/web_demo/index.html`), refresh)
+  const demo = usePreview(factoryPath(repo, `dist/${id}/web_demo/index.html`), version)
   const busy = !!job?.running
   const passed = pack.assets.filter(asset => asset.status === 'passed').map(asset => asset.name)
   const picked = [...selected].filter(name => passed.includes(name))
@@ -26,7 +26,7 @@ function Toolbar({ id, pack, repo, job, selected, refresh }: { id: string; pack:
   const copyListing = async () => {
     const done = await run('listing')
     if (done.result?.exit !== 0) return
-    const listing = await loadPreview(factoryPath(repo, `dist/${id}/listing.md`), true)
+    const listing = await loadPreview(factoryPath(repo, `dist/${id}/listing.md`))
     if (!listing?.text) return setNote('listing.md was not written')
     await navigator.clipboard.writeText(listing.text).then(() => setNote('Listing copied'), () => setNote('Clipboard is not available'))
   }
@@ -37,7 +37,7 @@ function Toolbar({ id, pack, repo, job, selected, refresh }: { id: string; pack:
     <button type="button" disabled={busy} onClick={() => void run('package')}>Package</button>
     <button type="button" disabled={busy} onClick={() => void copyListing()}>Copy listing</button>
     <button type="button" disabled={!demo?.url} onClick={() => demo && setPreview(demo)}>Open web demo</button>
-    {note && <span className="studio-muted" role="status">{note}</span>}
+    <span className="studio-muted" role="status">{note}</span>
   </div>
 }
 
@@ -73,7 +73,7 @@ interface Listing { entries: { name: string; path: string; directory: boolean }[
 const list = (folder: string) => api<Listing>(`/files?path=${encodeURIComponent(folder)}`).then(value => value.entries, () => [])
 
 // First, middle and last frame the preview rig rendered for a shader (first renderer folder).
-function Frames({ folder }: { folder: string }) {
+function Frames({ folder, version }: { folder: string; version: string }) {
   const [frames, setFrames] = useState<Preview[]>([])
   useEffect(() => {
     let alive = true
@@ -86,15 +86,15 @@ function Frames({ folder }: { folder: string }) {
       if (alive) setFrames(loaded)
     })()
     return () => { alive = false }
-  }, [folder])
+  }, [folder, version])
   return <span className="studio-frames">{frames.map(frame => <button key={frame.path} type="button" onClick={() => setPreview(frame)} title={frame.name}><img src={frame.url} alt={frame.name} /></button>)}</span>
 }
 
-function Media({ asset, repo, pack }: { asset: Asset; repo: string; pack: string }) {
-  const audio = usePreview(asset.output_path && /\.wav$/i.test(asset.output_path) ? asset.output_path : null)
+function Media({ asset, repo, pack, version }: { asset: Asset; repo: string; pack: string; version: string }) {
+  const audio = usePreview(asset.output_path && /\.wav$/i.test(asset.output_path) ? asset.output_path : null, version)
   if (!asset.output_path) return <span className="studio-muted">not built</span>
-  if (audio?.url) return <audio controls preload="none" src={audio.url} />
-  if (asset.kind === 'shader') return <Frames folder={factoryPath(repo, `build/${pack}/preview/${asset.name}`)} />
+  if (audio?.url) return <audio controls preload="none" src={audio.url} aria-label={`Play ${asset.name}`} />
+  if (asset.kind === 'shader') return <Frames folder={factoryPath(repo, `build/${pack}/preview/${asset.name}`)} version={version} />
   return null
 }
 
@@ -105,14 +105,16 @@ export default function PackPage({ id }: { id: string }) {
   const refresh = job?.finished ?? 0
   const { repo } = useDesktop()
   const { data: pack, error } = usePoll(() => factory<PackDetail>(`/packs/${encodeURIComponent(id)}`), `pack:${id}`, refresh)
-  const verify = usePreview(factoryPath(repo, `dist/${id}/VERIFY.md`), refresh)
+  // Changes when a build ran (here or from a terminal), so previews refetch.
+  const version = pack ? `${refresh}:${pack.assets.map(asset => `${asset.status}${asset.attempts}`).join()}:${pack.releases.length}` : `${refresh}`
+  const verify = usePreview(factoryPath(repo, `dist/${id}/VERIFY.md`), version)
   if (error) return <p className="studio-error" role="alert">{error}</p>
   if (!pack) return <p className="studio-muted">Loading {id}…</p>
   const counts: Record<string, number> = {}
   for (const asset of pack.assets) counts[asset.status] = (counts[asset.status] || 0) + 1
   return <>
     <Chips counts={counts} shipped={pack.releases.length > 0} />
-    <Toolbar id={id} pack={pack} repo={repo} job={job} selected={selected} refresh={refresh} />
+    <Toolbar id={id} pack={pack} repo={repo} job={job} selected={selected} version={version} />
     <JobLog job={job} />
     <table className="studio-assets" aria-label="Assets">
       <thead><tr><th aria-label="Select" /><th>Asset</th><th>Kind</th><th>Status</th><th>Attempts</th><th>Failed gates</th><th>Preview</th></tr></thead>
@@ -123,7 +125,7 @@ export default function PackPage({ id }: { id: string }) {
         <td><span className={`studio-chip ${asset.status}`}>{asset.status}</span></td>
         <td>{asset.attempts}</td>
         <td>{asset.gates.filter(gate => !gate.passed).map(gate => <div key={gate.gate} className="studio-gate"><b>{gate.gate}</b>: {gate.measured ?? '—'} <span className="studio-muted">(expected {gate.expected ?? '—'})</span></div>)}</td>
-        <td><Media asset={asset} repo={repo} pack={id} /></td>
+        <td><Media asset={asset} repo={repo} pack={id} version={version} /></td>
       </tr>)}</tbody>
     </table>
     <section className="studio-verify">

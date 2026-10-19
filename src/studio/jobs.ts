@@ -28,7 +28,5 @@ export function startJob(pack: string, cmd: JobCommand, body: object = {}): Prom
   )
 }
 
-export const useJob = (pack: string) => useSyncExternalStore(
-  listener => { listeners.add(listener); return () => { listeners.delete(listener) } },
-  () => jobs.get(pack) ?? null,
-)
+const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }
+export const useJob = (pack: string) => useSyncExternalStore(subscribe, () => jobs.get(pack) ?? null)
