@@ -140,3 +140,19 @@ def test_recipe_hash_covers_cli_and_harness(fac):
         after = py(fac, code)
         assert after != before, path.name
         before = after
+
+
+def test_emit_survives_a_closed_pipe(fac):
+    """The desktop service may exit mid-job; the CLI must finish its work rather than die on its next print."""
+    out = py(fac, "import io, sys\n"
+                  "import pipeline.run as r\n"
+                  "class Gone(io.TextIOBase):\n"
+                  "    def write(self, s): raise BrokenPipeError(32, 'pipe closed')\n"
+                  "    def flush(self): raise BrokenPipeError(32, 'pipe closed')\n"
+                  "real = sys.stdout\n"
+                  "sys.stdout = Gone()\n"
+                  "r.JSON = True\n"
+                  "r.emit('still working', 'log')\n"
+                  "sys.stdout = real\n"
+                  "print('survived')")
+    assert "survived" in out

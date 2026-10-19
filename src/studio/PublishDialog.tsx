@@ -14,12 +14,17 @@ export default function PublishDialog({ id, preview, onClose }: { id: string; pr
   }, [preview])
   const expected = String(result?.pushes[0]?.target ?? '').split(':')[0]
   const ready = !!result && !result.refusal && !result.error && result.pushes.length > 0
-  const publish = () => { void startJob(id, 'publish', { confirm: typed }); ref.current?.close() }
+  // expect: exactly what this preview listed; the CLI refuses if the files changed since.
+  const publish = () => {
+    void startJob(id, 'publish', { confirm: typed, expect: result!.pushes.map(push => `${String(push.channel)}:${String(push.sha256)}`) })
+    ref.current?.close()
+  }
   return <dialog ref={ref} className="studio-dialog" aria-label={`Publish ${id}`} onClose={onClose}>
     <h2>Publish {id}</h2>
     {!result && <p className="studio-muted">Checking what would be pushed…</p>}
     {result?.refusal && <p className="studio-error" role="alert">Publish refused: {result.refusal}</p>}
     {result?.error && <p className="studio-error" role="alert">{result.error}</p>}
+    {result && !result.refusal && !result.error && !result.pushes.length && <p className="studio-error" role="alert">The dry run found nothing to push.</p>}
     {ready && <>
       <table className="studio-assets" aria-label="Pushes">
         <thead><tr><th>Channel</th><th>Target</th><th>SHA-256</th></tr></thead>
@@ -29,7 +34,7 @@ export default function PublishDialog({ id, preview, onClose }: { id: string; pr
         </tr>)}</tbody>
       </table>
       <p>This uploads to itch.io. Type <code>{expected}</code> to confirm.</p>
-      <input aria-label={`Type ${expected} to confirm`} value={typed} onChange={event => setTyped(event.target.value)} autoComplete="off" spellCheck={false} />
+      <input autoFocus aria-label={`Type ${expected} to confirm`} value={typed} onChange={event => setTyped(event.target.value)} autoComplete="off" spellCheck={false} />
     </>}
     <div className="studio-toolbar">
       <button type="button" onClick={() => ref.current?.close()}>Cancel</button>

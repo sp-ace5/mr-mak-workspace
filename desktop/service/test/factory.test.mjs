@@ -316,3 +316,31 @@ test('building a mesh pack also needs Blender', async () => {
     assert.equal((await job(f, 'listing')).status, 200);                    // only build runs Blender
   } finally { f.close(); }
 });
+
+test('cancel while a job is still preparing stops it before it spawns', async () => {
+  const f = await fixture({ STUB_MODE: 'slowconfig' });
+  try {
+    const starting = job(f, 'build');
+    await new Promise(resolve => setTimeout(resolve, 300));                 // reading the config
+    assert.equal((await post(`${f.url}/factory/packs/ui_sfx_v1/cancel`)).status, 200);
+    const result = await starting;
+    assert.equal(result.status, 409);
+    assert.match(result.body.error, /Cancelled before it started/);
+    assert.deepEqual(await f.calls(), []);                                    // never spawned
+    process.env.STUB_MODE = 'ok';
+    assert.equal((await job(f, 'build')).status, 200);
+  } finally { f.close(); }
+});
+
+test('publish forwards the previewed hashes as --expect', async () => {
+  const f = await fixture();
+  try {
+    const pair = `godot-addon:${'a'.repeat(64)}`;
+    assert.equal((await job(f, 'publish', { confirm: 'me/ui_sfx_v1', expect: [pair] })).status, 200);
+    assert.deepEqual((await f.calls()).at(-1), ['publish', '--pack', 'spec/packs/ui_sfx_v1.yaml', '--json', '--expect', pair]);
+    for (const expect of ['x', ['--evil'], [`godot-addon:${'z'.repeat(64)}`]])
+      assert.equal((await job(f, 'publish', { confirm: 'me/ui_sfx_v1', expect })).status, 400, JSON.stringify(expect));
+    assert.equal((await job(f, 'publish', { dryRun: true, expect: [pair] })).status, 400);
+    assert.equal((await job(f, 'build', { expect: [pair] })).status, 400);
+  } finally { f.close(); }
+});

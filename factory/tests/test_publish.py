@@ -259,3 +259,19 @@ def test_relative_butler_path_resolves_against_factory(fac, butler):
     r = publish(fac, pack, "--dry-run")
     assert r.returncode == 0, r.stdout + r.stderr
     assert [e["cmd"][0] for e in events(r) if e["event"] == "push"][0] == str(exe)
+
+
+def test_publish_refuses_when_files_changed_since_the_preview(fac, butler):
+    """--expect carries the channel:sha256 pairs the user saw in the dry run; anything else is not what they confirmed."""
+    exe, calls = butler
+    pack = built_sfx(fac)
+    z = fake_zip(fac)
+    seen = [f"{e['channel']}:{e['sha256']}" for e in events(publish(fac, pack, "--dry-run")) if e["event"] == "push"]
+    (fac / "dist" / "t_sfx" / "web_demo").mkdir()                 # a channel appears after the preview
+    (fac / "dist" / "t_sfx" / "web_demo" / "index.html").write_text("<html>", encoding="utf-8")
+    assert_refused(publish(fac, pack, "--expect", *seen), fac, calls, "changed since the preview")
+    (fac / "dist" / "t_sfx" / "web_demo" / "index.html").unlink()
+    (fac / "dist" / "t_sfx" / "web_demo").rmdir()
+    r = publish(fac, pack, "--expect", *seen)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert calls_made(calls) == [["push", str(z), "tester/t_sfx:godot-addon"]]

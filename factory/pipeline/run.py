@@ -14,7 +14,10 @@ DB = pathlib.Path(os.environ.get("FACTORY_DB") or ROOT / "factory.db")
 JSON = False                      # --json: one event object per stdout line instead of human text
 
 def emit(text, event="log", **fields):
-    print(json.dumps({"event": event, "msg": text, **fields}) if JSON else text, flush=True)
+    try:
+        print(json.dumps({"event": event, "msg": text, **fields}) if JSON else text, flush=True)
+    except OSError:          # the desktop service went away mid-job: finish the work, nobody is reading anyway
+        pass
 
 def connect():
     con = sqlite3.connect(DB)
@@ -584,7 +587,7 @@ def dir_sha256(d):
         h.update(f.relative_to(d).as_posix().encode() + b"\0" + f.read_bytes())
     return h.hexdigest()
 
-def cmd_publish(con, pack, spec_path, dry_run=False):
+def cmd_publish(con, pack, spec_path, dry_run=False, expect=None):
     """Uploads the addon zip (and web_demo if present) to itch.io with butler. Refuses unless the pack is
     shippable: report exits 0, every live asset is approved, the zip exists, and nothing changed since the build."""
     pid = pack["pack_id"]
@@ -629,6 +632,9 @@ def cmd_publish(con, pack, spec_path, dry_run=False):
     pushes = [("godot-addon", zip_path, sha256(zip_path))]
     if (dist / "web_demo").is_dir():
         pushes.append(("html5", dist / "web_demo", dir_sha256(dist / "web_demo")))
+    # --expect: the channel:sha256 pairs the user saw in the dry run and confirmed. Anything else was not confirmed.
+    if expect is not None and sorted(f"{c}:{h}" for c, _, h in pushes) != sorted(expect):
+        return refuse("files changed since the preview: open Publish again to see what would be uploaded")
     for channel, path, file_sha in pushes:
         target = f"{user}/{pid}:{channel}"
         cmd = [str(butler), "push", str(path), target]
@@ -718,7 +724,7 @@ def run(a):
     if a.cmd == "report":  return cmd_report(con, pack)
     if a.cmd == "package": return cmd_package(con, pack)
     if a.cmd == "listing": return cmd_listing(con, pack)
-    if a.cmd == "publish": return cmd_publish(con, pack, spec_path, a.dry_run)
+    if a.cmd == "publish": return cmd_publish(con, pack, spec_path, a.dry_run, a.expect)
     return 0
 
 def main():
@@ -732,6 +738,7 @@ def main():
     ap.add_argument("--only", nargs="*", help="approve: just these asset names")
     ap.add_argument("--dry-run", action="store_true", help="publish: print the butler commands, push nothing")
     ap.add_argument("--open", action="store_true", help="playground: launch Godot on it after a clean load")
+    ap.add_argument("--expect", nargs="*", help="publish: the channel:sha256 pairs the dry run showed; refuse on any change")
     ap.add_argument("--json", action="store_true", help="one JSON event per stdout line")
     a = ap.parse_args()
     if a.cmd == "new" and not a.kind:
@@ -747,7 +754,10 @@ def main():
         if JSON:
             emit(str(e), "error", message=str(e))
     if JSON:
-        print(json.dumps({"event": "done", "cmd": a.cmd, "exit": code}), flush=True)
+        try:
+            print(json.dumps({"event": "done", "cmd": a.cmd, "exit": code}), flush=True)
+        except OSError:      # nobody left to tell (see emit)
+            pass
     return code
 
 if __name__ == "__main__":

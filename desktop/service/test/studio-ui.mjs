@@ -139,6 +139,8 @@ try {
   await page.getByRole('log', { name: 'publish log' }).getByText('pushed me/ui_sfx_v1:html5').waitFor();
   const publishes = (await stubCalls()).filter(call => call[0] === 'publish');
   assert.deepEqual(publishes.map(call => call.includes('--dry-run')), [true, false]);
+  // The real publish carries exactly what the preview showed, so the CLI can refuse changed files.
+  assert.deepEqual(publishes[1].slice(publishes[1].indexOf('--expect') + 1), [`godot-addon:${'a'.repeat(64)}`, `html5:${'b'.repeat(64)}`]);
 
   process.env.STUB_MODE = 'refused';
   await page.getByRole('button', { name: 'Publish…' }).click();
